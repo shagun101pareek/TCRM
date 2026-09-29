@@ -1,0 +1,50 @@
+{
+  "name": "new-telecrm | 2a. Watcher: telecrm collection",
+  "nodes": [
+    {
+      "id": "w1-trigger",
+      "name": "Watch telecrm",
+      "type": "n8n-nodes-base.mongoDbTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {
+        "databaseName": "stance-dashboard",
+        "collectionName": "telecrm",
+        "fieldsToMonitor": "*",
+        "operationTypes": ["insert", "update", "replace"]
+      },
+      "credentials": { "mongoDb": { "id": "REPLACE_WITH_MONGO_CRED_ID", "name": "MongoDB" } }
+    },
+    {
+      "id": "w1-phone",
+      "name": "Extract Phone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "jsCode": "const ev = $input.first().json;\nif (!['insert','update','replace'].includes(ev.operationType)) return [];\nconst doc = ev.fullDocument;\nif (!doc || !doc.phone) return [];\nfunction normPhone10(raw) {\n  let s = String(raw).trim().replace(/[^0-9]/g, '');\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  return s;\n}\nconst phone10 = normPhone10(doc.phone);\nif (!phone10 || phone10.length < 10) return [];\nreturn [{ json: { phone: phone10 } }];"
+      }
+    },
+    {
+      "id": "w1-call",
+      "name": "Call Sync Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "REPLACE_WITH_SYNC_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Extract Phone').first().json.phone }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Watch telecrm": { "main": [[{ "node": "Extract Phone", "type": "main", "index": 0 }]] },
+    "Extract Phone": { "main": [[{ "node": "Call Sync Webhook", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}

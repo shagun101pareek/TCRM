@@ -1,0 +1,586 @@
+{
+  "name": "new-telecrm Daily Report to Slack",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "981ae956-98e2-439b-af03-8a4964c06a4c",
+      "name": "Daily 8:30AM IST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1728,
+        2416
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "test-date-1",
+              "name": "test_date",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ce3ecdf4-ad35-42fe-a030-02b81e9d0eb1",
+      "name": "Set Test Date1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1600,
+        2240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const IST_OFFSET_MS = 19800000;\n\nlet inputJson = {};\ntry { inputJson = $input.first().json; } catch(e) { try { inputJson = $json; } catch(e2) {} }\n\nconst rawDate = String(inputJson.test_date || '').trim();\nlet y, m, d;\nif (rawDate.length === 10 && rawDate[4] === '-' && rawDate[7] === '-') {\n  y = parseInt(rawDate.slice(0,4), 10);\n  m = parseInt(rawDate.slice(5,7), 10);\n  d = parseInt(rawDate.slice(8,10), 10);\n} else {\n  const istYesterday = new Date(Date.now() + IST_OFFSET_MS - 86400000);\n  y = istYesterday.getUTCFullYear();\n  m = istYesterday.getUTCMonth() + 1;\n  d = istYesterday.getUTCDate();\n}\n\nconst start_ms = Date.UTC(y, m-1, d) - IST_OFFSET_MS;\nconst end_ms   = start_ms + 86400000;\nconst pad = n => String(n).padStart(2,'0');\nconst iso_date      = `${y}-${pad(m)}-${pad(d)}`;\nconst nextIst       = new Date(start_ms + 86400000 + IST_OFFSET_MS);\nconst iso_date_next = `${nextIst.getUTCFullYear()}-${pad(nextIst.getUTCMonth()+1)}-${pad(nextIst.getUTCDate())}`;\nconst start_utc_iso = new Date(start_ms).toISOString();\nconst end_utc_iso   = new Date(end_ms).toISOString();\n\nconst istDay       = new Date(start_ms + IST_OFFSET_MS);\nconst weekday      = istDay.getUTCDay();\nconst mondayOffset = weekday === 0 ? -6 : 1 - weekday;\nconst weekStartIst = new Date(istDay.getTime() + mondayOffset * 86400000);\nconst week_start_ms      = Date.UTC(weekStartIst.getUTCFullYear(), weekStartIst.getUTCMonth(), weekStartIst.getUTCDate()) - IST_OFFSET_MS;\nconst prev_week_start_ms = week_start_ms - 7*86400000;\nconst prev_week_end_ms   = week_start_ms;\n\nconst istClockIso = ms => {\n  const dt = new Date(ms + IST_OFFSET_MS);\n  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth()+1)}-${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}:${pad(dt.getUTCMinutes())}:${pad(dt.getUTCSeconds())}.000Z`;\n};\nconst start_ist_iso        = istClockIso(start_ms);\nconst end_ist_iso          = istClockIso(end_ms);\nconst week_start_ist_iso   = istClockIso(week_start_ms);\nconst prev_week_start_ist_iso = istClockIso(prev_week_start_ms);\nconst prev_week_end_ist_iso   = istClockIso(prev_week_end_ms);\nconst toIsoDate = ms => { const dt = new Date(ms+IST_OFFSET_MS); return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth()+1)}-${pad(dt.getUTCDate())}`; };\n\nconst MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n\nreturn [{ json: {\n  start_ms, end_ms, iso_date, iso_date_next,\n  start_utc_iso, end_utc_iso,\n  start_ist_iso, end_ist_iso, week_start_ist_iso, prev_week_start_ist_iso, prev_week_end_ist_iso,\n  week_start_ms, prev_week_start_ms, prev_week_end_ms,\n  week_start_utc_iso:      new Date(week_start_ms).toISOString(),\n  prev_week_start_utc_iso: new Date(prev_week_start_ms).toISOString(),\n  prev_week_end_utc_iso:   new Date(prev_week_end_ms).toISOString(),\n  wtd_iso_start: toIsoDate(week_start_ms),\n  prev_iso_start: toIsoDate(prev_week_start_ms),\n  prev_iso_end: toIsoDate(prev_week_end_ms),\n  p0_threshold: start_ms + 17*3600000,\n  date_label: `${d} ${MONTHS[m-1]} ${y}${rawDate ? ' (test)' : ''}`,\n  y, m, d, is_test: rawDate.length === 10\n}}];\n"
+      },
+      "id": "f9eadd89-fae8-42e5-9820-7151c6d5c46e",
+      "name": "Calculate Windows1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1280,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "=[\n  { \"$facet\": {\n    \"new_leads\": [\n  { \"$match\": { \"$or\": [ { \"created_on\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_utc_iso }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_utc_iso }} } }, { \"created_on\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } },\n  { \"$project\": {\n    \"conversionStatus\": 1, \"status\": \"$conversionStatus\",\n    \"created_on\": 1, \"created_at\": 1,\n    \"phone\": 1, \"name\": 1,\n    \"telecrm_form_branch\": 1, \"branch\": \"$telecrm_form_branch\",\n    \"telecrm_first_interaction_date\": 1, \"source\": 1,\n    \"stage\": { \"$filter\": { \"input\": { \"$ifNull\": [\"$stage\", []] }, \"as\": \"e\", \"cond\": { \"$and\": [ { \"$eq\": [ { \"$ifNull\": [\"$$e.platform\", \"telecrm\"] }, \"telecrm\" ] }, { \"$in\": [\"$$e.status\", [\"No Response\", \"In Pipeline\", \"Session Booked\", \"Session booked\", \"Session Rescheduled\", \"Not Converted\", \"Converted\", \"Won / Converted\", \"No Show\", \"Not Shown Up\"]] } ] } } }\n  } },\n  { \"$limit\": 5000 }\n],\n    \"older_leads\": [\n  { \"$match\": {\n    \"$or\": [ { \"created_on\": { \"$lt\": {{ $('Calculate Windows1').item.json.start_utc_iso }}, \"$type\": \"string\" } }, { \"created_on\": { \"$lt\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$type\": \"number\" } } ],\n    \"stage\": { \"$elemMatch\": { \"$and\": [ { \"$or\": [ { \"platform\": \"telecrm\" }, { \"platform\": null } ] }, { \"status\": { \"$in\": [\"No Response\", \"In Pipeline\", \"Session Booked\", \"Session booked\", \"Session Rescheduled\", \"Not Converted\", \"Converted\", \"Won / Converted\", \"No Show\", \"Not Shown Up\"] } }, { \"$or\": [ { \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ] }, { \"$and\": [ { \"$or\": [ { \"occurred_at\": null }, { \"occurred_at\": \"\" }, { \"occurred_at\": { \"$exists\": false } } ] }, { \"date\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } } ] } ] } ] } }\n  } },\n  { \"$project\": {\n    \"conversionStatus\": 1, \"status\": \"$conversionStatus\",\n    \"created_on\": 1, \"created_at\": 1,\n    \"phone\": 1, \"name\": 1,\n    \"telecrm_form_branch\": 1, \"branch\": \"$telecrm_form_branch\",\n    \"telecrm_first_interaction_date\": 1, \"source\": 1,\n    \"stage\": { \"$filter\": { \"input\": { \"$ifNull\": [\"$stage\", []] }, \"as\": \"e\", \"cond\": { \"$and\": [ { \"$eq\": [ { \"$ifNull\": [\"$$e.platform\", \"telecrm\"] }, \"telecrm\" ] }, { \"$in\": [\"$$e.status\", [\"No Response\", \"In Pipeline\", \"Session Booked\", \"Session booked\", \"Session Rescheduled\", \"Not Converted\", \"Converted\", \"Won / Converted\", \"No Show\", \"Not Shown Up\"]] } ] } } }\n  } },\n  { \"$limit\": 5000 }\n],\n    \"older_stage\": [\n  { \"$match\": { \"$or\": [ { \"created_on\": { \"$lt\": {{ $('Calculate Windows1').item.json.start_utc_iso }}, \"$type\": \"string\" } }, { \"created_on\": { \"$lt\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$type\": \"number\" } } ], \"stage\": { \"$elemMatch\": { \"$and\": [ { \"$or\": [ { \"platform\": \"telecrm\" }, { \"platform\": null } ] }, { \"$or\": [ { \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ] }, { \"$and\": [ { \"$or\": [ { \"occurred_at\": null }, { \"occurred_at\": \"\" }, { \"occurred_at\": { \"$exists\": false } } ] }, { \"date\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } } ] } ] } ] } } } },\n  { \"$project\": {\n    \"conversionStatus\": 1, \"status\": \"$conversionStatus\",\n    \"created_on\": 1, \"created_at\": 1, \"source\": 1, \"name\": 1, \"phone\": 1,\n    \"telecrm_form_branch\": 1, \"branch\": \"$telecrm_form_branch\",\n    \"telecrm_first_interaction_date\": 1,\n    \"stage\": { \"$filter\": { \"input\": { \"$ifNull\": [\"$stage\", []] }, \"as\": \"e\", \"cond\": { \"$and\": [ { \"$eq\": [ { \"$ifNull\": [\"$$e.platform\", \"telecrm\"] }, \"telecrm\" ] }, { \"$or\": [ { \"$and\": [ { \"$gte\": [\"$$e.occurred_at\", \"{{ $('Calculate Windows1').item.json.iso_date }}\"] }, { \"$lt\": [\"$$e.occurred_at\", \"{{ $('Calculate Windows1').item.json.iso_date_next }}\"] } ] }, { \"$and\": [ { \"$gte\": [\"$$e.occurred_at\", {{ $('Calculate Windows1').item.json.start_ms }}] }, { \"$lt\": [\"$$e.occurred_at\", {{ $('Calculate Windows1').item.json.end_ms }}] } ] }, { \"$and\": [ { \"$in\": [ { \"$ifNull\": [\"$$e.occurred_at\", \"\"] }, [null, \"\"] ] }, { \"$gte\": [\"$$e.date\", \"{{ $('Calculate Windows1').item.json.iso_date }}\"] }, { \"$lt\": [\"$$e.date\", \"{{ $('Calculate Windows1').item.json.iso_date_next }}\"] } ] } ] } ] } } }\n  } },\n  { \"$limit\": 5000 }\n],\n    \"status_counts\": [\n  { \"$group\": { \"_id\": \"$conversionStatus\", \"count\": { \"$sum\": 1 } } }\n],\n    \"plat_stats\": [\n  { \"$match\": { \"stage\": { \"$elemMatch\": { \"platform\": \"telecrm\", \"status\": \"Not Converted\", \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } } } },\n  { \"$group\": { \"_id\": { \"$let\": {\n        \"vars\": {\n          \"lastSrc\": {\n            \"$reduce\": {\n              \"input\": { \"$ifNull\": [\"$source\", []] },\n              \"initialValue\": \"Unknown\",\n              \"in\": { \"$cond\": [\n                { \"$and\": [ { \"$ne\": [\"$$this.source\", null] }, { \"$ne\": [\"$$this.source\", \"\"] } ] },\n                \"$$this.source\",\n                \"$$value\"\n              ] }\n            }\n          }\n        },\n        \"in\": \"$$lastSrc\"\n      } }, \"count\": { \"$sum\": 1 } } },\n  { \"$sort\": { \"count\": -1 } }\n],\n    \"sessions\": [\n  { \"$match\": {\n    \"stage\": { \"$elemMatch\": {\n      \"platform\": \"telecrm\",\n      \"status\": { \"$in\": [\"Converted\",\"Won / Converted\",\"No Show\",\"Not Shown Up\"] },\n      \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ]\n    } }\n  } },\n  { \"$project\": {\n      \"_id\": 0,\n      \"phone\": 1, \"name\": 1,\n      \"telecrm_form_branch\": 1, \"branch\": \"$telecrm_form_branch\",\n      \"source\": 1, \"conversionStatus\": 1, \"status\": \"$conversionStatus\",\n      \"stage\": { \"$filter\": { \"input\": { \"$ifNull\": [\"$stage\", []] }, \"as\": \"e\", \"cond\": { \"$eq\": [\"$$e.platform\", \"telecrm\"] } } },\n      \"created_on\": 1, \"created_at\": 1\n  } }\n],\n    \"temperature\": [\n  { \"$project\": {\n    \"conversionStatus\": 1,\n    \"teleStages\": { \"$filter\": { \"input\": { \"$ifNull\": [\"$stage\", []] }, \"as\": \"e\", \"cond\": { \"$eq\": [\"$$e.platform\", \"telecrm\"] } } }\n  } },\n  { \"$addFields\": { \"status\": { \"$ifNull\": [\"$conversionStatus\", \"Fresh\"] } } },\n  { \"$match\": { \"status\": { \"$in\": [\"Fresh\", \"In Pipeline\", \"Session Booked\", \"Session booked\", \"Session Rescheduled\", \"No Response\", \"Not Shown Up\", \"No Show\"] } } },\n  { \"$addFields\": {\n    \"statusDate\": {\n      \"$reduce\": {\n        \"input\": \"$teleStages\",\n        \"initialValue\": null,\n        \"in\": {\n          \"$cond\": [\n            { \"$or\": [\n              { \"$and\": [ { \"$in\": [\"$status\", [\"Not Shown Up\", \"No Show\"]] }, { \"$in\": [\"$$this.status\", [\"Not Shown Up\", \"No Show\"]] } ] },\n              { \"$and\": [ { \"$in\": [\"$status\", [\"Session Booked\", \"Session booked\"]] }, { \"$in\": [\"$$this.status\", [\"Session Booked\", \"Session booked\"]] } ] },\n              { \"$eq\": [\"$$this.status\", \"$status\"] }\n            ] },\n            { \"$cond\": [\n              { \"$or\": [ { \"$eq\": [\"$$value\", null] }, { \"$gt\": [\"$$this.occurred_at\", \"$$value\"] } ] },\n              \"$$this.occurred_at\",\n              \"$$value\"\n            ] },\n            \"$$value\"\n          ]\n        }\n      }\n    }\n  } },\n  { \"$addFields\": {\n    \"bucket\": {\n      \"$switch\": {\n        \"branches\": [\n          { \"case\": { \"$in\": [\"$status\", [\"Fresh\", \"In Pipeline\", \"Session Booked\", \"Session booked\", \"Session Rescheduled\"]] }, \"then\": \"Hot\" },\n          { \"case\": { \"$in\": [\"$status\", [\"No Response\", \"Not Shown Up\", \"No Show\"]] }, \"then\": {\n            \"$let\": {\n              \"vars\": {\n                \"ageDays\": {\n                  \"$cond\": [\n                    { \"$eq\": [\"$statusDate\", null] },\n                    null,\n                    { \"$floor\": { \"$divide\": [ { \"$subtract\": [\"$$NOW\", { \"$toDate\": \"$statusDate\" }] }, 86400000 ] } }\n                  ]\n                }\n              },\n              \"in\": {\n                \"$switch\": {\n                  \"branches\": [\n                    { \"case\": { \"$eq\": [\"$$ageDays\", null] }, \"then\": null },\n                    { \"case\": { \"$lte\": [\"$$ageDays\", 7] }, \"then\": \"Hot\" },\n                    { \"case\": { \"$lte\": [\"$$ageDays\", 15] }, \"then\": \"Warm\" }\n                  ],\n                  \"default\": \"Cold\"\n                }\n              }\n            }\n          } }\n        ],\n        \"default\": null\n      }\n    }\n  } },\n  { \"$match\": { \"bucket\": { \"$in\": [\"Hot\", \"Warm\", \"Cold\"] } } },\n  { \"$group\": { \"_id\": \"$bucket\", \"count\": { \"$sum\": 1 } } }\n],\n    \"wtd_new_leads_count\": [\n  { \"$match\": { \"$or\": [ { \"created_on\": { \"$gte\": {{ $('Calculate Windows1').item.json.week_start_utc_iso }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_utc_iso }} } }, { \"created_on\": { \"$gte\": {{ $('Calculate Windows1').item.json.week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } },\n  { \"$count\": \"count\" }\n],\n    \"prev_new_leads_count\": [\n  { \"$match\": { \"$or\": [ { \"created_on\": { \"$gte\": {{ $('Calculate Windows1').item.json.prev_week_start_utc_iso }}, \"$lt\": {{ $('Calculate Windows1').item.json.prev_week_end_utc_iso }} } }, { \"created_on\": { \"$gte\": {{ $('Calculate Windows1').item.json.prev_week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.prev_week_end_ms }} } } ] } },\n  { \"$count\": \"count\" }\n],\n    \"wtd_bookings_count\": [\n  { \"$match\": { \"stage\": { \"$elemMatch\": { \"platform\": \"telecrm\", \"status\": { \"$in\": [\"Session Booked\", \"Session booked\", \"Session Rescheduled\"] }, \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.wtd_iso_start }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } } } },\n  { \"$count\": \"count\" }\n],\n    \"prev_bookings_count\": [\n  { \"$match\": { \"stage\": { \"$elemMatch\": { \"platform\": \"telecrm\", \"status\": { \"$in\": [\"Session Booked\", \"Session booked\", \"Session Rescheduled\"] }, \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.prev_iso_start }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.prev_iso_end }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.prev_week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.prev_week_end_ms }} } } ] } } } },\n  { \"$count\": \"count\" }\n],\n    \"fv_bookings\": [\n  { \"$match\": { \"stage\": { \"$elemMatch\": {\n    \"platform\": \"telecrm\",\n    \"status\": { \"$in\": [\"Session Booked\", \"Session booked\", \"Session Rescheduled\"] },\n    \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.iso_date }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ]\n  } } } },\n  { \"$count\": \"count\" }\n]\n  } }\n]"
+      },
+      "id": "1acd2b0a-4f32-41f9-81c2-8ae754687770",
+      "name": "Facet Query (new-telecrm)",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        -1072,
+        2128
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "pRKjaYacQPSVL5T6",
+          "name": "MongoDB account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "=[\n  { \"$facet\": {\n    \"conv\": [\n      { \"$match\": { \"stage\": { \"$elemMatch\": {\n        \"platform\": \"telecrm\",\n        \"status\": { \"$in\": [\"Converted\",\"Won / Converted\"] },\n        \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.wtd_iso_start }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ]\n      } } } },\n      { \"$count\": \"n\" }\n    ],\n    \"nshow\": [\n      { \"$match\": { \"stage\": { \"$elemMatch\": {\n        \"platform\": \"telecrm\",\n        \"status\": { \"$in\": [\"No Show\",\"Not Shown Up\"] },\n        \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.wtd_iso_start }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.iso_date_next }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.end_ms }} } } ]\n      } } } },\n      { \"$count\": \"n\" }\n    ]\n  } },\n  { \"$project\": {\n      \"conv\":  { \"$ifNull\": [ { \"$arrayElemAt\": [\"$conv.n\", 0] },  0 ] },\n      \"nshow\": { \"$ifNull\": [ { \"$arrayElemAt\": [\"$nshow.n\", 0] }, 0 ] }\n  } }\n]"
+      },
+      "id": "896da23a-b10e-4cb5-8054-90affbd0b5bd",
+      "name": "Query WTD1",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        -1072,
+        2272
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "pRKjaYacQPSVL5T6",
+          "name": "MongoDB account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "=[\n  { \"$facet\": {\n    \"conv\": [\n      { \"$match\": { \"stage\": { \"$elemMatch\": {\n        \"platform\": \"telecrm\",\n        \"status\": { \"$in\": [\"Converted\",\"Won / Converted\"] },\n        \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.prev_iso_start }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.prev_iso_end }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.prev_week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.prev_week_end_ms }} } } ]\n      } } } },\n      { \"$count\": \"n\" }\n    ],\n    \"nshow\": [\n      { \"$match\": { \"stage\": { \"$elemMatch\": {\n        \"platform\": \"telecrm\",\n        \"status\": { \"$in\": [\"No Show\",\"Not Shown Up\"] },\n        \"$or\": [ { \"occurred_at\": { \"$gte\": \"{{ $('Calculate Windows1').item.json.prev_iso_start }}\", \"$lt\": \"{{ $('Calculate Windows1').item.json.prev_iso_end }}\" } }, { \"occurred_at\": { \"$gte\": {{ $('Calculate Windows1').item.json.prev_week_start_ms }}, \"$lt\": {{ $('Calculate Windows1').item.json.prev_week_end_ms }} } } ]\n      } } } },\n      { \"$count\": \"n\" }\n    ]\n  } },\n  { \"$project\": {\n      \"conv\":  { \"$ifNull\": [ { \"$arrayElemAt\": [\"$conv.n\", 0] },  0 ] },\n      \"nshow\": { \"$ifNull\": [ { \"$arrayElemAt\": [\"$nshow.n\", 0] }, 0 ] }\n  } }\n]"
+      },
+      "id": "f5fe8b74-bc06-4592-bbe6-63688f8e986a",
+      "name": "Query Prev Week1",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        -1072,
+        2416
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "pRKjaYacQPSVL5T6",
+          "name": "MongoDB account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "crm-sync",
+        "query": "=[\n  { \"$match\": {\n      \"firstVisitAppointments\": { \"$elemMatch\": {\n        \"status\": { \"$in\": [\"PAID\", \"INVOICE_GENERATED\", \"VISITED\"] },\n        \"startTime\": {\n          \"$gte\": {{ $('Calculate Windows1').item.json.start_ms }},\n          \"$lt\":  {{ $('Calculate Windows1').item.json.end_ms }}\n        }\n      }}\n  }},\n  { \"$addFields\": {\n      \"todayVisit\": { \"$arrayElemAt\": [ { \"$filter\": {\n        \"input\": { \"$ifNull\": [\"$firstVisitAppointments\", []] },\n        \"as\": \"a\",\n        \"cond\": { \"$and\": [\n          { \"$in\": [\"$$a.status\", [\"PAID\",\"INVOICE_GENERATED\",\"VISITED\"]] },\n          { \"$gte\": [\"$$a.startTime\", {{ $('Calculate Windows1').item.json.start_ms }}] },\n          { \"$lt\":  [\"$$a.startTime\", {{ $('Calculate Windows1').item.json.end_ms }}] }\n        ]}\n      }}, 0] }\n  }},\n  { \"$project\": { \"_id\": 0,\n      \"phone\": 1, \"name\": 1, \"branch\": 1,\n      \"lead_source\": 1, \"source\": 1,\n      \"status\": 1, \"stage\": 1, \"created_at\": 1, \"created_on\": 1,\n      \"isConverted\": 1,\n      \"appt_status\":   \"$todayVisit.status\",\n      \"cancel_reason\": \"$todayVisit.cancellationReason\"\n  }}\n]"
+      },
+      "id": "57704d2e-a64e-4d82-b880-e61f89acfc3d",
+      "name": "Query Appointments Today",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        -1072,
+        2560
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "pRKjaYacQPSVL5T6",
+          "name": "MongoDB account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "numberInputs": 4
+      },
+      "id": "134b3ae9-a7ca-4fb8-832d-8b5d8ad6efce",
+      "name": "Merge All Queries",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -848,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const FACET_BUCKETS = [\"new_leads\", \"older_leads\", \"older_stage\", \"status_counts\", \"plat_stats\", \"sessions\", \"temperature\", \"wtd_new_leads_count\", \"prev_new_leads_count\", \"wtd_bookings_count\", \"prev_bookings_count\", \"fv_bookings\"];\nconst items = [];\nlet standaloneSeen = 0;\nfor (const it of $input.all()) {\n  const j = (it && it.json) || {};\n  const isFacet = FACET_BUCKETS.every(k => Array.isArray(j[k]));\n  if (isFacet) {\n    for (const b of FACET_BUCKETS) {\n      for (const d of j[b]) {\n        items.push({ json: { ...d, _queryType: b }, pairedItem: { item: 0 } });\n      }\n    }\n    continue;\n  }\n  if ('appt_status' in j || 'cancel_reason' in j) {\n    items.push({ json: { ...j, _queryType: 'appointments_today' }, pairedItem: { item: 0 } });\n    continue;\n  }\n  const qtype = standaloneSeen === 0 ? 'wtd' : 'prev_week_sessions';\n  standaloneSeen++;\n  items.push({ json: { ...j, _queryType: qtype }, pairedItem: { item: 0 } });\n}\nreturn items;\n"
+      },
+      "id": "a90efc53-45ee-4866-9288-2ff4ba542d58",
+      "name": "Flatten to Tagged Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -624,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// new-telecrm daily report — CRM metrics from conversionStatus + telecrm-only stage[]\nconst HOT_STATUSES       = new Set(['Session Booked','Session booked','Session Rescheduled']);\nconst CONVERTED_STATUSES = new Set(['Converted','Won / Converted']);\nconst NSHOW_STATUSES     = new Set(['No Show','Not Shown Up']);\nconst SB_STATUSES        = new Set(['Session Booked','Session booked','Session Rescheduled']);\nconst META_PLATFORMS     = new Set(['meta_form','Facebook','meta_paid','instagram_paid']);\nconst HOT_ALWAYS         = new Set(['Fresh','In Pipeline','Session Booked','Session booked','Session Rescheduled']);\nconst DECAY              = new Set(['Not Shown Up','No Show','No Response']);\nconst TERMINAL           = new Set(['Converted','Won / Converted','Not Converted']);\nconst HOT_DAYS = 7, WARM_DAYS = 15, DAY_MS = 86400000;\n\nfunction telecrmStages(doc) {\n  return (doc.stage || []).filter(s => s && (s.platform == null || s.platform === 'telecrm'));\n}\nfunction stageStamp(v) {\n  if (v == null || v === '') return '';\n  if (typeof v === 'number' && Number.isFinite(v)) return new Date(v < 1e12 ? v * 1000 : v).toISOString();\n  const s = String(v).trim();\n  if (/^\\d{12,}$/.test(s)) {\n    const n = Number(s);\n    if (Number.isFinite(n)) return new Date(n).toISOString();\n  }\n  return s;\n}\nfunction stageTime(s) {\n  if (!s) return '';\n  return stageStamp(s.occurred_at) || stageStamp(s.date);\n}\nfunction stageTimeOnDay(s, iso_date) {\n  if (!s) return '';\n  const occurred = stageStamp(s.occurred_at);\n  if (occurred.startsWith(iso_date)) return occurred;\n  const dated = stageStamp(s.date);\n  if (dated.startsWith(iso_date)) return dated;\n  return '';\n}\nfunction createdMs(doc) {\n  const n = doc.created_on;\n  if (typeof n === 'number' && Number.isFinite(n) && n > 0) return n;\n  if (n && typeof n === 'object' && n.$numberLong) {\n    const v = Number(n.$numberLong);\n    if (Number.isFinite(v) && v > 0) return v;\n  }\n  if (typeof n === 'string' && n.trim()) {\n    const t = Date.parse(n);\n    if (!Number.isNaN(t)) return t;\n  }\n  if (typeof doc.created_at === 'number' && Number.isFinite(doc.created_at)) return doc.created_at;\n  if (typeof doc.created_at === 'string') {\n    const t = Date.parse(doc.created_at);\n    return Number.isNaN(t) ? 0 : t;\n  }\n  return 0;\n}\nfunction crmStatus(doc) {\n  return doc.conversionStatus || doc.status || 'Fresh';\n}\nfunction getBranch(doc) {\n  return doc.telecrm_form_branch || doc.branch || '—';\n}\nfunction latestSourceValue(doc) {\n  const src = doc.source;\n  if (Array.isArray(src)) {\n    for (let i = src.length - 1; i >= 0; i--) {\n      const row = src[i];\n      if (!row) continue;\n      if (typeof row === 'string' && row.trim()) return row.trim();\n      const v = row.source || row.value;\n      if (v && typeof v === 'string' && v.trim()) return v.trim();\n    }\n  }\n  if (typeof doc.lead_source === 'string' && doc.lead_source.trim()) return doc.lead_source.trim();\n  if (Array.isArray(doc.lead_source) && doc.lead_source.length && typeof doc.lead_source[0] === 'object') {\n    return doc.lead_source[0].source || 'Unknown';\n  }\n  return 'Unknown';\n}\nfunction getPlatform(doc) {\n  return latestSourceValue(doc);\n}\nfunction getCategory(doc) {\n  return latestSourceValue(doc);\n}\nfunction getAdInfo(doc) {\n  const src = doc.source;\n  if (Array.isArray(src)) {\n    for (const row of src) {\n      if (!row || typeof row !== 'object') continue;\n      const ad = row.ad_name || row.ad;\n      const campaign = row.campaign_name || row.campaign;\n      if (ad || campaign) return [ad || '—', campaign || '—'];\n    }\n  }\n  const raw = doc.lead_source;\n  if (Array.isArray(raw) && raw.length && typeof raw[0] === 'object') {\n    const ad = raw[0].ad, campaign = raw[0].campaign;\n    if (ad || campaign) return [ad || '—', campaign || '—'];\n  }\n  return ['—','—'];\n}\nfunction normPhone(p) {\n  if (p == null) return null;\n  let s = String(p).trim().replace(/^\\+/, '');\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  return s;\n}\nfunction eodStatus(doc, iso_date) {\n  let latest = null;\n  let latestTs = '';\n  for (const s of telecrmStages(doc)) {\n    const ds = stageTimeOnDay(s, iso_date);\n    if (!ds) continue;\n    if (latest === null || ds > latestTs) { latest = s; latestTs = ds; }\n  }\n  const created = createdMs(doc);\n  const bornToday = created >= start_ms && created < start_ms + 86400000;\n  if (bornToday) {\n    const current = crmStatus(doc);\n    const undated = current && telecrmStages(doc).some(s =>\n      s.status === current && !stageStamp(s.occurred_at) && !stageStamp(s.date));\n    const datedStatus = latest && latest.status;\n    if (undated && current !== 'Fresh' && (!datedStatus || datedStatus === 'Fresh' || datedStatus === current)) {\n      return current;\n    }\n  }\n  return (latest && latest.status) || 'Fresh';\n}\nfunction firstContactMs(doc) {\n  const v = doc.telecrm_first_interaction_date != null ? doc.telecrm_first_interaction_date : doc.first_interaction_date;\n  if (v == null) return null;\n  if (typeof v === 'number' && Number.isFinite(v)) return v;\n  if (typeof v === 'string') {\n    const t = Date.parse(v);\n    return Number.isNaN(t) ? null : t;\n  }\n  return null;\n}\nfunction parseDate(v) {\n  if (v == null) return null;\n  if (v instanceof Date) return v;\n  if (typeof v === 'number') return new Date(v);\n  if (typeof v === 'string') { const d = new Date(v); return isNaN(d) ? null : d; }\n  if (typeof v === 'object' && v.$date) return new Date(v.$date);\n  return null;\n}\nfunction statusUpdateDate(doc) {\n  const status = crmStatus(doc);\n  let aliases;\n  if (status === 'Not Shown Up' || status === 'No Show') aliases = new Set(['Not Shown Up','No Show']);\n  else if (status === 'Session Booked' || status === 'Session booked') aliases = new Set(['Session Booked','Session booked']);\n  else aliases = new Set([status]);\n  let latest = null;\n  for (const s of telecrmStages(doc)) {\n    if (!aliases.has(s.status)) continue;\n    const d = parseDate(s.occurred_at || s.date);\n    if (d && (latest === null || d > latest)) latest = d;\n  }\n  return latest || parseDate(doc.modified_at);\n}\nfunction classifyTemp(doc, now) {\n  const s = crmStatus(doc);\n  if (HOT_ALWAYS.has(s)) return 'Hot';\n  if (TERMINAL.has(s)) return null;\n  if (DECAY.has(s)) {\n    const sud = statusUpdateDate(doc);\n    if (!sud) return null;\n    const age = Math.floor((now - sud) / DAY_MS);\n    if (age <= HOT_DAYS) return 'Hot';\n    if (age <= WARM_DAYS) return 'Warm';\n    return 'Cold';\n  }\n  return null;\n}\n\nconst w = $('Calculate Windows1').item.json;\nconst iso_date      = w.iso_date;\nconst iso_date_next = w.iso_date_next;\nconst start_ms      = w.start_ms;\nconst p0_threshold  = w.p0_threshold;\nconst date_label    = w.date_label;\n\nconst _QTYPE_BY_NODE = {\n  \"Query New Leads\": \"new_leads\",\n  \"Query Older Leads\": \"older_leads\",\n  \"Query Older Stage Events\": \"older_stage\",\n  \"Query Status Counts\": \"status_counts\",\n  \"Query Plat Stats\": \"plat_stats\",\n  \"Query Sessions\": \"sessions\",\n  \"Query Temperature\": \"temperature\",\n  \"Query WTD\": \"wtd\",\n  \"Query Prev Week\": \"prev_week_sessions\",\n  \"Query WTD New Leads\": \"wtd_new_leads_count\",\n  \"Query Prev New Leads\": \"prev_new_leads_count\",\n  \"Query WTD Bookings\": \"wtd_bookings_count\",\n  \"Query Prev Bookings\": \"prev_bookings_count\",\n  \"Query FV Bookings\": \"fv_bookings\"\n};\nconst _MERGED_BY_TYPE = (() => {\n  const m = {};\n  for (const it of $input.all()) {\n    const j = (it && it.json) || {};\n    const t = j._queryType;\n    if (!t) continue;\n    (m[t] = m[t] || []).push(j);\n  }\n  return m;\n})();\nfunction safeAll(nodeName) {\n  const t = _QTYPE_BY_NODE[nodeName];\n  if (!t) return [];\n  return _MERGED_BY_TYPE[t] || [];\n}\nfunction firstJson(nodeName) {\n  const arr = safeAll(nodeName);\n  return (arr.length && arr[0]) || {};\n}\n\nconst newLeadDocs    = safeAll('Query New Leads');\nconst olderLeadDocs  = safeAll('Query Older Leads');\nconst olderStageDocs = safeAll('Query Older Stage Events');\nconst platStats      = safeAll('Query Plat Stats');\nconst tempCounts     = safeAll('Query Temperature');\nconst sessionsDocs   = safeAll('Query Sessions');\nconst wtdDoc         = firstJson('Query WTD');\nconst prevWeekDoc    = firstJson('Query Prev Week');\nconst wtdNewLeadsDoc = firstJson('Query WTD New Leads');\nconst prevNewLeadsDoc= firstJson('Query Prev New Leads');\nconst wtdBookingsDoc = firstJson('Query WTD Bookings');\nconst prevBookingsDoc= firstJson('Query Prev Bookings');\n\nconst overlayByPhone = {};\nfor (const doc of [...newLeadDocs, ...olderLeadDocs, ...olderStageDocs, ...sessionsDocs]) {\n  const ph = normPhone(String(doc.phone || ''));\n  if (ph) overlayByPhone[ph] = doc;\n}\nfunction overlayDoc(doc) {\n  const ph = normPhone(String(doc.phone || ''));\n  const nt = ph && overlayByPhone[ph];\n  if (!nt) return doc;\n  return Object.assign({}, doc, {\n    name: nt.name || doc.name,\n    conversionStatus: nt.conversionStatus || doc.conversionStatus,\n    status: nt.conversionStatus || doc.status,\n    source: nt.source || doc.source,\n    stage: nt.stage || doc.stage,\n    telecrm_form_branch: nt.telecrm_form_branch || doc.telecrm_form_branch,\n    branch: nt.telecrm_form_branch || doc.branch,\n    created_on: nt.created_on != null ? nt.created_on : doc.created_on,\n    created_at: nt.created_on != null ? nt.created_on : doc.created_at,\n    telecrm_first_interaction_date: nt.telecrm_first_interaction_date || doc.telecrm_first_interaction_date\n  });\n}\n\nconst new_leads   = newLeadDocs.length;\nconst older_leads = olderLeadDocs.length;\n\nlet fresh_new = 0, nr_new = 0, ip_new = 0, sb_new = 0;\nlet conv_new_s1 = 0, nc_new = 0, nshow_new_s1 = 0;\nfor (const doc of newLeadDocs) {\n  const s = eodStatus(doc, iso_date);\n  if      (s === 'Fresh')                    fresh_new++;\n  else if (s === 'No Response')              nr_new++;\n  else if (s === 'In Pipeline')              ip_new++;\n  else if (HOT_STATUSES.has(s))              sb_new++;\n  else if (CONVERTED_STATUSES.has(s))        conv_new_s1++;\n  else if (s === 'Not Converted')            nc_new++;\n  else if (NSHOW_STATUSES.has(s))            nshow_new_s1++;\n}\n\nlet nr_older = 0, ip_older = 0, sb_older = 0, nc_older = 0;\nlet conv_older_s = 0, nshow_older_s = 0;\nfor (const doc of olderStageDocs) {\n  const s = eodStatus(doc, iso_date);\n  if      (s === 'No Response')       nr_older++;\n  else if (s === 'In Pipeline')       ip_older++;\n  else if (HOT_STATUSES.has(s))       sb_older++;\n  else if (CONVERTED_STATUSES.has(s)) conv_older_s++;\n  else if (s === 'Not Converted')     nc_older++;\n  else if (NSHOW_STATUSES.has(s))     nshow_older_s++;\n}\n\nconst sessions_detail = [];\nlet conv_new = 0, conv_older = 0, nshow_new = 0, nshow_older = 0;\n\nconst apptTodayDocs = (_MERGED_BY_TYPE['appointments_today'] || []).map(overlayDoc);\nfor (const doc of apptTodayDocs) {\n  const isNew = createdMs(doc) >= start_ms;\n  const [ad] = getAdInfo(doc);\n  sessions_detail.push({\n    name:           doc.name || '—',\n    phone:          String(doc.phone || '—'),\n    branch:         getBranch(doc),\n    platform:       getPlatform(doc),\n    category:       getCategory(doc),\n    ad,\n    appt_status:    doc.appt_status || '—',\n    telecrm_status: crmStatus(doc) || '—',\n    converted:      true\n  });\n  if (isNew) conv_new++; else conv_older++;\n}\n\nconst apptTodayPhones = new Set(apptTodayDocs.map(d => normPhone(String(d.phone || ''))));\nfor (const doc of sessionsDocs) {\n  const todayNshow = telecrmStages(doc).filter(s =>\n    stageTimeOnDay(s, iso_date) &&\n    NSHOW_STATUSES.has(s.status)\n  );\n  if (!todayNshow.length) continue;\n  const ph = normPhone(String(doc.phone || ''));\n  if (apptTodayPhones.has(ph)) continue;\n  const isNew = createdMs(doc) >= start_ms;\n  const [ad] = getAdInfo(doc);\n  sessions_detail.push({\n    name:           doc.name || '—',\n    phone:          String(doc.phone || '—'),\n    branch:         getBranch(doc),\n    platform:       getPlatform(doc),\n    category:       getCategory(doc),\n    ad,\n    appt_status:    '—',\n    telecrm_status: crmStatus(doc) || '—',\n    converted:      false\n  });\n  if (isNew) nshow_new++; else nshow_older++;\n}\nsessions_detail.sort((a,b) => (a.converted===b.converted ? a.name.localeCompare(b.name) : (a.converted?-1:1)));\nconst conv_today  = conv_new  + conv_older;\nconst nshow_today = nshow_new + nshow_older;\nconst total_sessions = sessions_detail.length;\n\nlet attempted_new = 0;\nfor (const doc of newLeadDocs) {\n  if (telecrmStages(doc).some(s => s.status === 'No Response' &&\n      stageTimeOnDay(s, iso_date))) {\n    attempted_new++;\n  }\n}\n\nconst older_bucket_sum = nr_older + ip_older + sb_older + nc_older + conv_older + nshow_older;\nconst fresh_older      = Math.max(0, older_leads - older_bucket_sum);\n\nconst timing = { 'T+0': 0, 'T+1': 0, 'T+2': 0, '>T+2': 0 };\nconst IST_OFFSET = 5.5 * 3600 * 1000;\nlet p0_contacted = 0, p0_uncontacted = 0;\nlet p1_contacted = 0, p1_uncontacted = 0;\nfor (const doc of newLeadDocs) {\n  const created      = createdMs(doc);\n  const firstContact = firstContactMs(doc);\n  const isContacted  = firstContact != null;\n  const isP0         = created < p0_threshold;\n  if (isP0) { if (isContacted) p0_contacted++; else p0_uncontacted++; }\n  else      { if (isContacted) p1_contacted++; else p1_uncontacted++; }\n  if (!isContacted) continue;\n  const cd  = new Date(created      + IST_OFFSET).toISOString().slice(0, 10);\n  const fcd = new Date(firstContact + IST_OFFSET).toISOString().slice(0, 10);\n  const d_days = Math.round((Date.parse(fcd) - Date.parse(cd)) / 86400000);\n  if      (d_days <= 0) timing['T+0']++;\n  else if (d_days === 1) timing['T+1']++;\n  else if (d_days === 2) timing['T+2']++;\n  else                   timing['>T+2']++;\n}\nconst p0_total = p0_contacted + p0_uncontacted;\nconst p1_total = p1_contacted + p1_uncontacted;\nconst p0 = p0_contacted, p1 = p1_contacted, p_unknown = 0;\nconst total_contacts = p0 + p1;\n\nconst plat_stats = {};\nconst fb_ads_counter = {};\nconst new_lead_conv_phones  = new Set();\nconst new_lead_nshow_phones = new Set();\nfor (const s of sessions_detail) {\n  if (!s.converted && s.phone) new_lead_nshow_phones.add(normPhone(s.phone));\n  if (s.converted && s.phone)  new_lead_conv_phones.add(normPhone(s.phone));\n}\nfor (const doc of newLeadDocs) {\n  const platform = getPlatform(doc);\n  const category = getCategory(doc);\n  const key = platform + '\\u0001' + category;\n  if (!plat_stats[key]) {\n    plat_stats[key] = { platform, category, volume: 0, sb: 0, nr: 0, ip: 0, nc: 0, fresh: 0, conv: 0, nshow: 0 };\n  }\n  const cell = plat_stats[key];\n  cell.volume++;\n  const ph = normPhone(String(doc.phone || ''));\n  const st = eodStatus(doc, iso_date);\n  if      (new_lead_conv_phones.has(ph))  cell.conv++;\n  else if (new_lead_nshow_phones.has(ph)) cell.nshow++;\n  else if (HOT_STATUSES.has(st))          cell.sb++;\n  else if (CONVERTED_STATUSES.has(st))    cell.sb++;\n  else if (st === 'Fresh')                cell.fresh++;\n  else if (st === 'No Response')          cell.nr++;\n  else if (st === 'In Pipeline')          cell.ip++;\n  else if (st === 'Not Converted')        cell.nc++;\n  else if (NSHOW_STATUSES.has(st))        cell.nshow++;\n\n  if (META_PLATFORMS.has(platform)) {\n    const [ad, campaign] = getAdInfo(doc);\n    const k = ad + '\\u0001' + campaign;\n    fb_ads_counter[k] = (fb_ads_counter[k] || 0) + 1;\n  }\n}\nconst fb_ads = Object.entries(fb_ads_counter)\n  .map(([k, count]) => {\n    const [ad, campaign] = k.split('\\u0001');\n    return { ad: ad || '\\u2014', campaign: campaign || '\\u2014', count };\n  })\n  .sort((a, b) => b.count - a.count)\n  .slice(0, 5);\n\nconst bookings_detail = [];\nconst _seen_booking = new Set();\nfor (const doc of [...newLeadDocs, ...olderStageDocs]) {\n  const _bph = String(doc.phone || '');\n  if (_seen_booking.has(_bph)) continue;\n  _seen_booking.add(_bph);\n  if (!telecrmStages(doc).some(s => SB_STATUSES.has(s.status) &&\n      stageTimeOnDay(s, iso_date))) continue;\n  const [ad, campaign] = getAdInfo(doc);\n  bookings_detail.push({\n    name:     doc.name || '—',\n    phone:    String(doc.phone || '—'),\n    branch:   getBranch(doc),\n    platform: getPlatform(doc),\n    category: getCategory(doc),\n    ad,\n    campaign\n  });\n}\n\nconst nc_by_platform = platStats.map(r => ({\n  platform: r._id || 'Unknown',\n  count:    r.count\n}));\nconst nc_total = nc_new + nc_older;\n\n// Section 7: temperature computed in the Mongo facet (no writes). JS fallback if empty.\nlet hot = 0, warm = 0, cold = 0;\nfor (const r of tempCounts) {\n  const b = r._id || ''; const c = r.count || 0;\n  if      (b === 'Hot')  hot  += c;\n  else if (b === 'Warm') warm += c;\n  else if (b === 'Cold') cold += c;\n}\nif (!hot && !warm && !cold) {\n  const nowMs = Date.now();\n  const seen = new Set();\n  for (const doc of [...newLeadDocs, ...olderLeadDocs, ...olderStageDocs, ...sessionsDocs]) {\n    const id = String(doc.phone || doc._id || '');\n    if (!id || seen.has(id)) continue;\n    seen.add(id);\n    const bucket = classifyTemp(doc, nowMs);\n    if (bucket === 'Hot') hot++;\n    else if (bucket === 'Warm') warm++;\n    else if (bucket === 'Cold') cold++;\n  }\n}\nconst total_pipeline = hot + warm + cold;\n\nconst wtd_new_leads  = wtdNewLeadsDoc.count  != null ? wtdNewLeadsDoc.count  : new_leads;\nconst prev_new_leads = prevNewLeadsDoc.count != null ? prevNewLeadsDoc.count : 0;\nconst wtd_bookings   = wtdBookingsDoc.count  != null ? wtdBookingsDoc.count  : 0;\nconst prev_bookings  = prevBookingsDoc.count != null ? prevBookingsDoc.count : 0;\nconst wtd_conv   = (wtdDoc      && wtdDoc.conv)      || 0;\nconst wtd_nshow  = (wtdDoc      && wtdDoc.nshow)     || 0;\nconst prev_conv  = (prevWeekDoc && prevWeekDoc.conv) || 0;\nconst prev_nshow = (prevWeekDoc && prevWeekDoc.nshow)|| 0;\nconst wtd_total  = wtd_conv  + wtd_nshow;\nconst prev_total = prev_conv + prev_nshow;\nconst wtd_conv_rate   = wtd_total  ? Math.round(1000 * wtd_conv  / wtd_total)  / 10 : 0;\nconst prev_conv_rate  = prev_total ? Math.round(1000 * prev_conv / prev_total) / 10 : 0;\nconst wtd_nshow_rate  = wtd_total  ? Math.round(1000 * wtd_nshow / wtd_total)  / 10 : 0;\nconst prev_nshow_rate = prev_total ? Math.round(1000 * prev_nshow/ prev_total) / 10 : 0;\nconst wtd_conv_pp  = Math.round(10 * (wtd_conv_rate  - prev_conv_rate))  / 10;\nconst wtd_nshow_pp = Math.round(10 * (wtd_nshow_rate - prev_nshow_rate)) / 10;\n\nconst _pad = (v, n) => String(v == null ? '' : v).padEnd(n);\nconst _padL = (v, n) => String(v == null ? '' : v).padStart(n);\nconst total_lv  = new_leads + older_leads;\nconst conv_pct  = total_sessions ? (100 * conv_today  / total_sessions).toFixed(1) : '0.0';\nconst nshow_pct = total_sessions ? (100 * nshow_today / total_sessions).toFixed(1) : '0.0';\nconst act_new   = fresh_new + nr_new + ip_new + sb_new + conv_new + nc_new + nshow_new;\nconst act_older = fresh_older + nr_older + ip_older + sb_older + conv_older + nc_older + nshow_older;\nconst slack_table_rows = [\n  ['Metric',            'New',  'Older', 'Total'],\n  ['─'.repeat(19),      '─'.repeat(5), '─'.repeat(5), '─'.repeat(5)],\n  ['Lead Volume',       new_leads,  older_leads,  total_lv],\n  ['→ Fresh',           fresh_new,  fresh_older,  fresh_new + fresh_older],\n  ['→ Attempted',       nr_new,     nr_older,     nr_new + nr_older],\n  ['→ In Pipeline',     ip_new,     ip_older,     ip_new + ip_older],\n  ['→ Session Booked',  sb_new,     sb_older,     sb_new + sb_older],\n  ['→ Converted',       conv_new,   conv_older,   conv_today],\n  ['→ Not Converted',   nc_new,     nc_older,     nc_total],\n  ['→ No Show',         nshow_new,  nshow_older,  nshow_today],\n  ['─'.repeat(19),      '─'.repeat(5), '─'.repeat(5), '─'.repeat(5)],\n  ['Activity Total',    act_new,    act_older,    act_new + act_older],\n];\nconst slack_table = slack_table_rows.map(r =>\n  _pad(r[0], 20) + ' ' + _padL(r[1], 5) + '  ' + _padL(r[2], 5) + '  ' + _padL(r[3], 5)\n).join('\\n');\nconst slack_summary =\n  '*Stance CRM — Daily Analytics (new-telecrm) — ' + date_label + '*\\n\\n' +\n  '*Section 1 — Lead Summary*\\n```\\n' + slack_table + '\\n```\\n' +\n  '*Sessions today:* ' + total_sessions + ' unique patients · ' +\n  'Converted: ' + conv_today + ' (' + conv_pct + '%) · ' +\n  'No Show: ' + nshow_today + ' (' + nshow_pct + '%)\\n' +\n  '*New-lead contact rate:* ' + (p0_contacted + p1_contacted) + '/' + (p0_total + p1_total) +\n  ' (' + ((p0_total + p1_total) ? (100*(p0_contacted + p1_contacted)/(p0_total + p1_total)).toFixed(1) : '0.0') + '%)\\n\\n' +\n  '_Full report files attached below._';\n\nreturn [{\n  json: {\n    date_label, iso_date,\n    new_leads, older_leads, fresh_older, attempted_new,\n    fresh_new, nr_new, ip_new, sb_new, conv_new_s1, nc_new, nshow_new_s1,\n    sb_older, nr_older, ip_older, nc_older,\n    conv_today, conv_new, conv_older,\n    nshow_today, nshow_new, nshow_older,\n    timing, p0, p1, p_unknown,\n    p0_total, p1_total, p0_contacted, p0_uncontacted, p1_contacted, p1_uncontacted,\n    total_contacts,\n    plat_stats: Object.values(plat_stats),\n    fb_ads,\n    bookings_detail,\n    sessions_detail,\n    total_sessions,\n    nc_by_platform, nc_total,\n    hot, warm, cold, total_pipeline,\n    wtd_new_leads, prev_new_leads,\n    wtd_bookings, prev_bookings,\n    wtd_total, wtd_conv, wtd_nshow,\n    prev_total, prev_conv, prev_nshow,\n    wtd_conv_rate, prev_conv_rate, wtd_nshow_rate, prev_nshow_rate,\n    wtd_conv_pp, wtd_nshow_pp,\n    slack_summary\n  }\n}];\n"
+      },
+      "id": "3f9b4e79-4391-42ba-b562-6e36bca1d884",
+      "name": "Build Report Data1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const reportData = $input.first().json;\nfunction normPhone(p) {\n  if (p == null) return null;\n  let s = String(p).trim().replace(/^\\+/, '');\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  return s;\n}\nconst apptByPhone = {};\nfor (const it of $('Flatten to Tagged Items').all()) {\n  const j = (it && it.json) || {};\n  if (j._queryType !== 'appointments_today') continue;\n  const ph = normPhone(j._id || j.phone);\n  if (ph) apptByPhone[ph] = j;\n}\nlet enriched = 0;\nfor (const row of (reportData.sessions_detail || [])) {\n  const a = apptByPhone[normPhone(row.phone)];\n  if (a && a.appt_status) {\n    row.appt_status   = a.appt_status;\n    row.cancel_reason = a.cancel_reason || null;\n    enriched++;\n  }\n}\nconsole.log('[enrich] populated appt_status on ' + enriched + '/' + (reportData.sessions_detail || []).length + ' session rows');\nreturn [{ json: reportData, pairedItem: { item: 0 } }];\n"
+      },
+      "id": "9245691c-a178-412a-b11c-8cd244086af0",
+      "name": "Enrich Appt Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.item.json;\n\nconst total_s     = d.total_sessions;\nconst conv        = d.conv_today;\nconst nshow       = d.nshow_today;\nconst conv_rate   = total_s ? Math.round(100 * conv / total_s * 10) / 10 : 0;\nconst nshow_rate  = total_s ? Math.round(100 * nshow / total_s * 10) / 10 : 0;\nconst wtd_conv_rate   = d.wtd_total  ? Math.round(100 * d.wtd_conv  / d.wtd_total  * 10) / 10 : 0;\nconst prev_conv_rate  = d.prev_total ? Math.round(100 * d.prev_conv / d.prev_total * 10) / 10 : 0;\nconst wtd_nshow_rate  = d.wtd_total  ? Math.round(100 * d.wtd_nshow  / d.wtd_total  * 10) / 10 : 0;\nconst prev_nshow_rate = d.prev_total ? Math.round(100 * d.prev_nshow / d.prev_total * 10) / 10 : 0;\n\nconst kpi_new   = d.new_leads;\nconst kpi_sb    = d.sb_new + d.sb_older;\nconst nc_total  = d.nc_total;\n\nconst other_new = d.new_leads - (d.fresh_new + d.nr_new + d.ip_new +\n                                  d.sb_new + d.conv_new + d.nc_new + d.nshow_new);\n\nlet s1_labels = ['Fresh', 'Attempted', 'In Pipeline', 'Session Booked',\n                 'Converted', 'Not Converted', 'No Show'];\nlet s1_values = [d.fresh_new, d.nr_new, d.ip_new, d.sb_new,\n                 d.conv_new, d.nc_new, d.nshow_new];\nif (other_new > 0) { s1_labels.push('Other'); s1_values.push(other_new); }\nconst s1_colors = ['#94a3b8','#f59e0b','#3b82f6','#8b5cf6','#22c55e','#ef4444','#f97316','#64748b'];\n\nconst timing_labels = Object.keys(d.timing);\nconst timing_values = Object.values(d.timing);\n\nconst plat_items = (d.plat_stats || []).slice().sort((a, b) => b.volume - a.volume);\nconst plat_names = plat_items.map(v => v.platform);\nconst ps_sb      = plat_items.map(v => v.sb);\nconst ps_nr      = plat_items.map(v => v.nr);\nconst ps_ip      = plat_items.map(v => v.ip);\nconst ps_nc      = plat_items.map(v => v.nc);\nconst ps_fresh   = plat_items.map(v => v.fresh);\nconst ps_conv    = plat_items.map(v => v.conv);\nconst ps_nshow   = plat_items.map(v => v.nshow);\n\nconst nc_labels = (d.nc_by_platform || []).map(r => r.platform);\nconst nc_values = (d.nc_by_platform || []).map(r => r.count);\n\nconst temp_labels = ['Hot','Warm','Cold'];\nconst temp_values = [d.hot, d.warm, d.cold];\nconst temp_colors = ['#ef4444','#f59e0b','#94a3b8'];\n\nconst wtd_metrics = ['New Leads','Bookings','Sessions','Converted','No Shows'];\nconst wtd_current = [d.wtd_new_leads, d.wtd_bookings, d.wtd_total, d.wtd_conv, d.wtd_nshow];\nconst wtd_prev    = [d.prev_new_leads, d.prev_bookings, d.prev_total, d.prev_conv, d.prev_nshow];\n\nconst fb_top5      = (d.fb_ads || []).slice(0, 5);\nconst fb_ad_labels = fb_top5.map(a => a.ad.length > 38 ? a.ad.slice(0, 38) + '\\u2026' : a.ad);\nconst fb_ad_full   = fb_top5.map(a => a.ad);\nconst fb_campaigns = fb_top5.map(a => a.campaign);\nconst fb_ad_values = fb_top5.map(a => a.count);\n\nfunction j(v) { return JSON.stringify(v); }\n\nfunction pct_h(n, denom) {\n  return denom ? `${(100*n/denom).toFixed(1)}%` : '\\u2014';\n}\n\nfunction pp_h(diff) {\n  const cls  = diff >= 0 ? 'pos' : 'neg';\n  const sign = diff >= 0 ? '+' : '';\n  return `<span class=\"${cls}\">${sign}${diff.toFixed(1)}pp</span>`;\n}\n\nfunction chg_h(cur, prev) {\n  if (!prev) return '\\u2014';\n  const delta = (cur - prev) / prev * 100;\n  const cls  = delta >= 0 ? 'pos' : 'neg';\n  const sign = delta >= 0 ? '+' : '';\n  return `<span class=\"${cls}\">${sign}${delta.toFixed(1)}%</span>`;\n}\n\nlet sess_rows = '';\nfor (const s of (d.sessions_detail || [])) {\n  const yn_cls = s.converted ? 'converted' : 'noshow';\n  const yn_txt = s.converted ? 'Yes' : 'No';\n  sess_rows += `<tr><td>${s.name}</td><td>${s.branch}</td>` +\n    `<td>${s.platform}</td><td>${s.appt_status}</td>` +\n    `<td>${s.telecrm_status}</td>` +\n    `<td><span class=\"badge ${yn_cls}\">${yn_txt}</span></td></tr>`;\n}\n\nlet booking_rows = '';\nfor (const b of (d.bookings_detail || [])) {\n  booking_rows += `<tr><td>${b.name}</td><td>${b.branch}</td>` +\n    `<td>${b.platform}</td><td>${b.category}</td>` +\n    `<td class=\"ad-cell\">${b.ad}</td></tr>`;\n}\n\nlet plat_tbl = '';\nfor (const v of plat_items) {\n  plat_tbl += `<tr><td>${v.platform}</td><td>${v.category}</td><td><b>${v.volume}</b></td>` +\n    `<td>${v.sb}</td><td>${v.nr}</td><td>${v.ip}</td>` +\n    `<td>${v.nc}</td><td>${v.conv}</td><td>${v.fresh}</td><td>${v.nshow}</td></tr>`;\n}\n\nconst plat_vol_total   = plat_items.reduce((s,v) => s+v.volume,0);\nconst plat_sb_total    = plat_items.reduce((s,v) => s+v.sb,0);\nconst plat_nr_total    = plat_items.reduce((s,v) => s+v.nr,0);\nconst plat_ip_total    = plat_items.reduce((s,v) => s+v.ip,0);\nconst plat_nc_total    = plat_items.reduce((s,v) => s+v.nc,0);\nconst plat_conv_total  = plat_items.reduce((s,v) => s+v.conv,0);\nconst plat_fr_total    = plat_items.reduce((s,v) => s+v.fresh,0);\nconst plat_ns_total    = plat_items.reduce((s,v) => s+v.nshow,0);\n\nconst timing_total = timing_values.reduce((s,v) => s+v, 0);\n\nconst nc_plat_rows = (d.nc_by_platform||[]).map(r =>\n  `<tr><td>${r.platform}</td><td>${r.count}</td><td>${pct_h(r.count,nc_total)}</td></tr>`\n).join('');\n\nconst lag_rows = Object.entries(d.timing).map(([b,c]) =>\n  `<tr><td>${b}</td><td>${c}</td></tr>`\n).join('');\n\nlet fb_section = '';\nif (fb_top5.length > 0) {\n  const fb_rows = fb_top5.map((a, i) => {\n    const campTrunc = fb_campaigns[i].length > 40 ? fb_campaigns[i].slice(0,40)+'\\u2026' : fb_campaigns[i];\n    return `<tr><td>${i+1}</td><td class=\"ad-cell\" title=\"${fb_ad_full[i]}\">${fb_ad_labels[i]}</td><td class=\"ad-cell\" title=\"${fb_campaigns[i]}\">${campTrunc}</td><td><b>${fb_ad_values[i]}</b></td></tr>`;\n  }).join('');\n  const fb_chart_js = `fit(\"fbAdsChart\",\"bar\",{labels:${j(fb_ad_labels)},datasets:[{label:\"Leads\",data:${j(fb_ad_values)},backgroundColor:\"#3b82f6\",borderRadius:5,borderSkipped:false}]},{indexAxis:\"y\",plugins:{legend:{display:false}},scales:{x:{ticks:{stepSize:1}},y:{grid:{display:false}}}});`;\n  fb_section = `<div class=\"section\"><div class=\"section-title\">Meta \\u2014 Top Ad Creatives</div><div class=\"split wide-chart\"><div class=\"chart-side\"><div class=\"chart-wrap h200\"><canvas id=\"fbAdsChart\"></canvas></div></div><div class=\"table-side\"><table><thead><tr><th>#</th><th>Ad Creative</th><th>Campaign</th><th>Leads</th></tr></thead><tbody>${fb_rows}</tbody></table></div></div></div>\\n<!-- fbChartJs:${fb_chart_js} -->`;\n}\n\nconst html = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Stance CRM \\u2014 Daily Analytics (new-telecrm) \\u2014 ${d.date_label}</title>\n<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js\"><\\/script>\n<style>\n@page{size:A4 landscape;margin:6mm}\n*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}\nhtml,body{width:100%}\nbody{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;background:#fff;color:#1e293b;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact}\n.page{max-width:100%;margin:0 auto;padding:8px 6px}\n.section,.split,.grid2,.grid3{break-inside:avoid;page-break-inside:avoid}\nheader{margin-bottom:24px}\nheader h1{font-size:1.5rem;font-weight:700;color:#0f172a}\nheader p{color:#64748b;margin-top:3px;font-size:.85rem}\n.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px}\n.kpi{background:#fff;border-radius:10px;padding:16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.07)}\n.kpi .lbl{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;font-weight:600;margin-bottom:5px}\n.kpi .val{font-size:1.8rem;font-weight:700;line-height:1}\n.kpi .sub{font-size:.72rem;color:#94a3b8;margin-top:3px}\n.kpi.green .val{color:#16a34a}.kpi.red .val{color:#dc2626}\n.kpi.blue .val{color:#2563eb}.kpi.purple .val{color:#7c3aed}\n.section{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.07);margin-bottom:18px;overflow:hidden}\n.section-title{font-size:.88rem;font-weight:700;color:#334155;padding:14px 18px 10px;border-bottom:1px solid #f1f5f9}\n.split{display:grid;grid-template-columns:1fr 1fr;gap:0}\n.split.wide-chart{grid-template-columns:42% 58%}\n.split.narrow-chart{grid-template-columns:28% 72%}\n.chart-side{padding:16px 18px;border-right:1px solid #f8fafc}\n.table-side{padding:12px 16px;overflow-x:auto}\n.chart-wrap{position:relative}\n.chart-wrap.h200{height:200px}.chart-wrap.h240{height:240px}\n.chart-wrap.h280{height:280px}.chart-wrap.h320{height:320px}\ntable{width:100%;border-collapse:collapse;font-size:.7rem;table-layout:auto;word-wrap:break-word;overflow-wrap:break-word}\nth{background:#f8fafc;color:#64748b;font-weight:600;text-align:left;padding:5px 6px;border-bottom:2px solid #e2e8f0;word-wrap:break-word}\ntd{padding:4px 6px;border-bottom:1px solid #f1f5f9;vertical-align:middle;color:#374151;word-wrap:break-word;overflow-wrap:break-word}\ntr:last-child td{border-bottom:none}\ntr:hover td{background:#fafbfc}\ntd.num{text-align:right;font-variant-numeric:tabular-nums}\ntd b{color:#1e293b}\n.ad-cell{max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.66rem}\n.table-side{padding:8px 10px;overflow:hidden}\n.chart-side{padding:10px 12px;border-right:1px solid #f8fafc;display:flex;align-items:center;justify-content:center}\n.chart-side .chart-wrap{width:100%}\ntfoot td{font-weight:700;color:#1e293b;border-top:2px solid #e2e8f0;border-bottom:none}\n.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.7rem;font-weight:600}\n.badge.converted{background:#dcfce7;color:#16a34a}\n.badge.noshow{background:#fee2e2;color:#dc2626}\n.pos{color:#16a34a;font-weight:600}.neg{color:#dc2626;font-weight:600}\n.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}\n.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-bottom:18px}\n</style>\n</head>\n<body>\n<div class=\"page\">\n\n<header>\n  <h1>Stance CRM \\u2014 Daily Analytics (new-telecrm)</h1>\n  <p>${d.date_label} &nbsp;\\u00b7&nbsp; 00:00 \\u2013 23:59 IST</p>\n</header>\n\n<div class=\"kpis\">\n  <div class=\"kpi blue\"><div class=\"lbl\">Total Leads</div><div class=\"val\">${kpi_new}</div><div class=\"sub\">new today</div></div>\n  <div class=\"kpi purple\"><div class=\"lbl\">Session Bookings</div><div class=\"val\">${d.sb_new}</div><div class=\"sub\">new today</div></div>\n  <div class=\"kpi\"><div class=\"lbl\">Sessions Today</div><div class=\"val\">${total_s}</div><div class=\"sub\">unique patients</div></div>\n  <div class=\"kpi green\"><div class=\"lbl\">Converted</div><div class=\"val\">${conv}</div><div class=\"sub\">Rate ${conv_rate}%</div></div>\n  <div class=\"kpi red\"><div class=\"lbl\">No Shows</div><div class=\"val\">${nshow}</div><div class=\"sub\">Rate ${nshow_rate}%</div></div>\n  <div class=\"kpi\"><div class=\"lbl\">Not Converted</div><div class=\"val\">${d.nc_new}</div><div class=\"sub\">new today</div></div>\n</div>\n\n<div class=\"grid2\">\n  <div class=\"section\">\n    <div class=\"section-title\">1. New Leads Breakdown \\u2014 by Current Status</div>\n    <div class=\"split\">\n      <div class=\"chart-side\"><div class=\"chart-wrap h240\"><canvas id=\"s1Chart\"></canvas></div></div>\n      <div class=\"table-side\">\n        <table>\n          <thead><tr><th>Status</th><th>New</th><th>Older</th><th>Total</th></tr></thead>\n          <tbody>\n            <tr><td><em>Lead Volume</em></td><td><em>${d.new_leads}</em></td><td><em>${d.older_leads}</em></td><td><em>${d.new_leads + d.older_leads}</em></td></tr>\n            <tr><td>\\u2192 Fresh</td><td>${d.fresh_new}</td><td>${d.fresh_older || 0}</td><td>${d.fresh_new + (d.fresh_older || 0)}</td></tr>\n            <tr><td>\\u2192 Attempted</td><td>${d.nr_new}</td><td>${d.nr_older || 0}</td><td>${d.nr_new + (d.nr_older || 0)}</td></tr>\n            <tr><td>\\u2192 In Pipeline</td><td>${d.ip_new}</td><td>${d.ip_older || 0}</td><td>${d.ip_new + (d.ip_older || 0)}</td></tr>\n            <tr><td>\\u2192 Session Booked</td><td>${d.sb_new}</td><td>${d.sb_older}</td><td>${kpi_sb}</td></tr>\n            <tr><td>\\u2192 Converted</td><td>${d.conv_new}</td><td>${d.conv_older}</td><td><b>${conv}</b></td></tr>\n            <tr><td>\\u2192 Not Converted</td><td>${d.nc_new}</td><td>${d.nc_older}</td><td>${nc_total}</td></tr>\n            <tr><td>\\u2192 No Show</td><td>${d.nshow_new}</td><td>${d.nshow_older}</td><td><b>${nshow}</b></td></tr>\n          </tbody>\n          <tfoot><tr><td><b>Activity Total</b></td><td><b>${d.fresh_new + d.nr_new + d.ip_new + d.sb_new + d.conv_new + d.nc_new + d.nshow_new}</b></td><td><b>${(d.fresh_older || 0) + (d.nr_older || 0) + (d.ip_older || 0) + d.sb_older + d.conv_older + d.nc_older + d.nshow_older}</b></td><td><b>${(d.fresh_new + d.nr_new + d.ip_new + d.sb_new + d.conv_new + d.nc_new + d.nshow_new) + ((d.fresh_older || 0) + (d.nr_older || 0) + (d.ip_older || 0) + d.sb_older + d.conv_older + d.nc_older + d.nshow_older)}</b></td></tr></tfoot>\n        </table>\n      </div>\n    </div>\n  </div>\n\n  <div class=\"section\">\n    <div class=\"section-title\">7. Total Pipeline Temperature</div>\n    <div class=\"split\">\n      <div class=\"chart-side\"><div class=\"chart-wrap h240\"><canvas id=\"tempChart\"></canvas></div></div>\n      <div class=\"table-side\">\n        <table>\n          <thead><tr><th>Bucket</th><th>Count</th><th>%</th></tr></thead>\n          <tbody>\n            <tr><td>\\ud83d\\udd34 Hot</td><td>${d.hot}</td><td>${pct_h(d.hot,d.total_pipeline)}</td></tr>\n            <tr><td>\\ud83d\\udfe1 Warm</td><td>${d.warm}</td><td>${pct_h(d.warm,d.total_pipeline)}</td></tr>\n            <tr><td>\\u26ab Cold</td><td>${d.cold}</td><td>${pct_h(d.cold,d.total_pipeline)}</td></tr>\n          </tbody>\n          <tfoot><tr><td>Total</td><td>${d.total_pipeline}</td><td>100%</td></tr></tfoot>\n        </table>\n      </div>\n    </div>\n  </div>\n</div>\n\n<div class=\"section\">\n  <div class=\"section-title\">3. Lead Source Breakdown \\u2014 Today's New Leads</div>\n  <div class=\"split wide-chart\">\n    <div class=\"chart-side\"><div class=\"chart-wrap h280\"><canvas id=\"platChart\"></canvas></div></div>\n    <div class=\"table-side\">\n      <table>\n        <thead><tr><th>Platform</th><th>Category</th><th>Vol</th><th>SB</th><th>NR</th><th>IP</th><th>NC</th><th>Conv</th><th>Fresh</th><th>NS</th></tr></thead>\n        <tbody>${plat_tbl}</tbody>\n        <tfoot><tr>\n          <td colspan=\"2\">Total</td>\n          <td>${plat_vol_total}</td><td>${plat_sb_total}</td><td>${plat_nr_total}</td><td>${plat_ip_total}</td>\n          <td>${plat_nc_total}</td><td>${plat_conv_total}</td><td>${plat_fr_total}</td><td>${plat_ns_total}</td>\n        </tr></tfoot>\n      </table>\n    </div>\n  </div>\n</div>\n\n<div class=\"grid2\">\n  <div class=\"section\">\n    <div class=\"section-title\">2a. Creation-to-First-Contact Lag</div>\n    <div class=\"split\">\n      <div class=\"chart-side\"><div class=\"chart-wrap h200\"><canvas id=\"lagChart\"></canvas></div></div>\n      <div class=\"table-side\">\n        <table>\n          <thead><tr><th>Bucket</th><th>Count</th></tr></thead>\n          <tbody>${lag_rows}</tbody>\n          <tfoot><tr><td>Total</td><td>${timing_total}</td></tr></tfoot>\n        </table>\n      </div>\n    </div>\n  </div>\n\n    <div class=\"section\">\n    <div class=\"section-title\">2b. New Leads \\u2014 Creation Window \\u00d7 Contacted</div>\n    <div class=\"split\">\n      <div class=\"chart-side\"><div class=\"chart-wrap h200\"><canvas id=\"p01Chart\"></canvas></div></div>\n      <div class=\"table-side\">\n        <table>\n          <thead><tr><th>Window</th><th>Total</th><th>Contacted</th><th>Contacted %</th></tr></thead>\n          <tbody>\n            <tr><td>Before 5 PM (P0)</td><td>${d.p0_total}</td><td>${d.p0_contacted}</td><td>${d.p0_total ? (100*d.p0_contacted/d.p0_total).toFixed(1) : \"0.0\"}%</td></tr>\n            <tr><td>After 5 PM (P1)</td><td>${d.p1_total}</td><td>${d.p1_contacted}</td><td>${d.p1_total ? (100*d.p1_contacted/d.p1_total).toFixed(1) : \"0.0\"}%</td></tr>\n          </tbody>\n          <tfoot><tr><td>Total</td><td>${d.p0_total+d.p1_total}</td><td>${d.p0_contacted+d.p1_contacted}</td><td>${(d.p0_total+d.p1_total) ? (100*(d.p0_contacted+d.p1_contacted)/(d.p0_total+d.p1_total)).toFixed(1) : \"0.0\"}%</td></tr></tfoot>\n        </table>\n        <p style=\"font-size:.7rem;color:#94a3b8;margin-top:8px\">${d.p0_total+d.p1_total} new leads \\u00b7 split by created_on (5 PM IST) and whether <code>telecrm_first_interaction_date</code> is set</p>\n      </div>\n    </div>\n  </div>\n</div>\n\n<div class=\"section\">\n  <div class=\"section-title\">5. Sessions Today \\u2014 Conversions &amp; No-Shows (${total_s} unique patients \\u00b7 ${conv_rate}% conversion rate)</div>\n  <div class=\"split narrow-chart\">\n    <div class=\"chart-side\"><div class=\"chart-wrap h240\"><canvas id=\"sessChart\"></canvas></div></div>\n    <div class=\"table-side\">\n      <table>\n        <thead><tr><th>Patient</th><th>Branch</th><th>Platform</th><th>Appt Status</th><th>CRM Status</th><th>Converted?</th></tr></thead>\n        <tbody>${sess_rows}</tbody>\n      </table>\n    </div>\n  </div>\n</div>\n\n<div class=\"grid2\">\n  <div class=\"section\">\n    <div class=\"section-title\">4. Session Bookings Today (${(d.bookings_detail||[]).length} total)</div>\n    <div class=\"split narrow-chart\">\n      <div class=\"chart-side\"><div class=\"chart-wrap h200\"><canvas id=\"sbChart\"></canvas></div></div>\n      <div class=\"table-side\">\n        <table>\n          <thead><tr><th>Name</th><th>Branch</th><th>Platform</th><th>Category</th><th>Ad</th></tr></thead>\n          <tbody>${booking_rows}</tbody>\n        </table>\n      </div>\n    </div>\n  </div>\n\n  <div class=\"section\">\n    <div class=\"section-title\">6. Not Converted Today \\u2014 by Platform (${nc_total} total)</div>\n    <div class=\"split\">\n      <div class=\"chart-side\"><div class=\"chart-wrap h200\"><canvas id=\"ncPlatChart\"></canvas></div></div>\n      <div class=\"table-side\">\n        <table>\n          <thead><tr><th>Platform</th><th>Count</th><th>%</th></tr></thead>\n          <tbody>${nc_plat_rows}</tbody>\n          <tfoot><tr><td>Total</td><td>${nc_total}</td><td>100%</td></tr></tfoot>\n        </table>\n      </div>\n    </div>\n  </div>\n</div>\n\n${fb_section}\n\n<div class=\"section\">\n  <div class=\"section-title\">8. Week-to-Date vs Previous Week</div>\n  <div class=\"split wide-chart\">\n    <div class=\"chart-side\"><div class=\"chart-wrap h240\"><canvas id=\"wtdChart\"></canvas></div></div>\n    <div class=\"table-side\">\n      <table>\n        <thead><tr><th>Metric</th><th>This Week</th><th>Prev Week</th><th>Change</th></tr></thead>\n        <tbody>\n          <tr><td>New Leads</td><td>${d.wtd_new_leads}</td><td>${d.prev_new_leads}</td><td>${chg_h(d.wtd_new_leads,d.prev_new_leads)}</td></tr>\n          <tr><td>Session Bookings</td><td>${d.wtd_bookings}</td><td>${d.prev_bookings}</td><td>${chg_h(d.wtd_bookings,d.prev_bookings)}</td></tr>\n          <tr><td>FIRST_VISIT Sessions</td><td>${d.wtd_total}</td><td>${d.prev_total}</td><td>${chg_h(d.wtd_total,d.prev_total)}</td></tr>\n          <tr><td>Converted</td><td>${d.wtd_conv}</td><td>${d.prev_conv}</td><td>${chg_h(d.wtd_conv,d.prev_conv)}</td></tr>\n          <tr><td>No Shows</td><td>${d.wtd_nshow}</td><td>${d.prev_nshow}</td><td>${chg_h(d.wtd_nshow,d.prev_nshow)}</td></tr>\n          <tr><td>Conversion Rate</td><td>${wtd_conv_rate.toFixed(1)}%</td><td>${prev_conv_rate.toFixed(1)}%</td><td>${pp_h(d.wtd_conv_pp)}</td></tr>\n          <tr><td>No-Show Rate</td><td>${wtd_nshow_rate.toFixed(1)}%</td><td>${prev_nshow_rate.toFixed(1)}%</td><td>${pp_h(d.wtd_nshow_pp)}</td></tr>\n        </tbody>\n      </table>\n    </div>\n  </div>\n</div>\n\n</div>\n\n<script>\nChart.defaults.font.family=\"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif\";\nChart.defaults.font.size=11;Chart.defaults.color=\"#64748b\";\n\nconst fit=(id,type,data,opts={})=>{\n  const el=document.getElementById(id);if(!el)return;\n  return new Chart(el.getContext(\"2d\"),{\n    type,data,\n    options:{responsive:true,maintainAspectRatio:false,\n      plugins:{legend:{position:\"bottom\",labels:{boxWidth:10,padding:10}}},\n      ...opts}\n  });\n};\n\nfit(\"s1Chart\",\"doughnut\",{\n  labels:${j(s1_labels)},\n  datasets:[{data:${j(s1_values)},backgroundColor:${j(s1_colors.slice(0,s1_values.length))},borderWidth:2,borderColor:\"#fff\"}]\n},{cutout:\"62%\"});\n\nfit(\"tempChart\",\"doughnut\",{\n  labels:${j(temp_labels)},\n  datasets:[{data:${j(temp_values)},backgroundColor:${j(temp_colors)},borderWidth:2,borderColor:\"#fff\"}]\n},{cutout:\"62%\"});\n\nfit(\"platChart\",\"bar\",{\n  labels:${j(plat_names)},\n  datasets:[\n    {label:\"Session Booked\",data:${j(ps_sb)},backgroundColor:\"#8b5cf6\"},\n    {label:\"No Response\",data:${j(ps_nr)},backgroundColor:\"#f59e0b\"},\n    {label:\"In Pipeline\",data:${j(ps_ip)},backgroundColor:\"#3b82f6\"},\n    {label:\"Not Converted\",data:${j(ps_nc)},backgroundColor:\"#ef4444\"},\n    {label:\"Converted\",data:${j(ps_conv)},backgroundColor:\"#22c55e\"},\n    {label:\"Fresh\",data:${j(ps_fresh)},backgroundColor:\"#94a3b8\"},\n    {label:\"No Show\",data:${j(ps_nshow)},backgroundColor:\"#f97316\"},\n  ]\n},{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true}},plugins:{legend:{position:\"bottom\"}}});\n\nfit(\"lagChart\",\"bar\",{\n  labels:${j(timing_labels)},\n  datasets:[{data:${j(timing_values)},backgroundColor:[\"#3b82f6\",\"#8b5cf6\",\"#94a3b8\",\"#64748b\"],borderRadius:5,borderSkipped:false}]\n},{plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{ticks:{stepSize:1}}}});\n\nfit(\"p01Chart\",\"doughnut\",{\n  labels:[\"Before 5 PM\",\"After 5 PM\"],\n  datasets:[{data:[${d.p0},${d.p1}],backgroundColor:[\"#3b82f6\",\"#8b5cf6\"],borderWidth:2,borderColor:\"#fff\"}]\n},{cutout:\"62%\"});\n\nfit(\"sessChart\",\"doughnut\",{\n  labels:[\"Converted\",\"No Show\"],\n  datasets:[{data:[${conv},${nshow}],backgroundColor:[\"#22c55e\",\"#ef4444\"],borderWidth:2,borderColor:\"#fff\"}]\n},{cutout:\"62%\"});\n\nconst sbPlats={};\n${j(d.bookings_detail||[])}.forEach(b=>{sbPlats[b.platform]=(sbPlats[b.platform]||0)+1});\nfit(\"sbChart\",\"doughnut\",{\n  labels:Object.keys(sbPlats),\n  datasets:[{data:Object.values(sbPlats),backgroundColor:[\"#3b82f6\",\"#8b5cf6\",\"#f59e0b\",\"#94a3b8\"],borderWidth:2,borderColor:\"#fff\"}]\n},{cutout:\"55%\"});\n\nfit(\"ncPlatChart\",\"doughnut\",{\n  labels:${j(nc_labels)},\n  datasets:[{data:${j(nc_values)},backgroundColor:[\"#f59e0b\",\"#3b82f6\",\"#94a3b8\",\"#8b5cf6\",\"#22c55e\"],borderWidth:2,borderColor:\"#fff\"}]\n},{cutout:\"55%\"});\n\n${fb_top5.length > 0 ? `fit(\"fbAdsChart\",\"bar\",{labels:${j(fb_ad_labels)},datasets:[{label:\"Leads\",data:${j(fb_ad_values)},backgroundColor:\"#3b82f6\",borderRadius:5,borderSkipped:false}]},{indexAxis:\"y\",plugins:{legend:{display:false}},scales:{x:{ticks:{stepSize:1}},y:{grid:{display:false}}}});` : ''}\n\nfit(\"wtdChart\",\"bar\",{\n  labels:${j(wtd_metrics)},\n  datasets:[\n    {label:\"This Week\",data:${j(wtd_current)},backgroundColor:\"#3b82f6\",borderRadius:4},\n    {label:\"Prev Week\",data:${j(wtd_prev)},backgroundColor:\"#cbd5e1\",borderRadius:4},\n  ]\n},{scales:{x:{grid:{display:false}},y:{ticks:{stepSize:1}}},plugins:{legend:{position:\"bottom\"}}});\n\nsetTimeout(function(){window.chartsReady=true;document.title=document.title+' [ready]';},1500);\n<\\/script>\n</body>\n</html>`;\n\nreturn [{ json: {\n  html,\n  date_label: d.date_label, iso_date: d.iso_date,\n  new_leads: d.new_leads, older_leads: d.older_leads,\n  fresh_new: d.fresh_new, nr_new: d.nr_new, ip_new: d.ip_new,\n  sb_new: d.sb_new, sb_older: d.sb_older,\n  conv_new_s1: d.conv_new_s1, conv_older: d.conv_older, conv_today: d.conv_today,\n  nc_new: d.nc_new, nc_older: d.nc_older, nc_total: d.nc_total,\n  nshow_new_s1: d.nshow_new_s1, nshow_older: d.nshow_older, nshow_today: d.nshow_today,\n  total_sessions: d.total_sessions,\n} }];\n"
+      },
+      "id": "66453d5a-0f7b-4005-8d9b-57c51925689e",
+      "name": "Generate HTML1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const html = $input.item.json.html;\nconst buffer = Buffer.from(html, 'utf8');\nconst binaryData = await this.helpers.prepareBinaryData(buffer, 'index.html', 'text/html');\nreturn [{ json: $input.item.json, binary: { data: binaryData } }];\n"
+      },
+      "id": "d6659698-6f1d-41aa-9620-5710f6ced3f4",
+      "name": "HTML to Binary1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://gotenberg:3000/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "paperWidth",
+              "value": "11.7"
+            },
+            {
+              "name": "paperHeight",
+              "value": "8.27"
+            },
+            {
+              "name": "landscape",
+              "value": "true"
+            },
+            {
+              "name": "marginTop",
+              "value": "0.25"
+            },
+            {
+              "name": "marginBottom",
+              "value": "0.25"
+            },
+            {
+              "name": "marginLeft",
+              "value": "0.25"
+            },
+            {
+              "name": "marginRight",
+              "value": "0.25"
+            },
+            {
+              "name": "printBackground",
+              "value": "true"
+            },
+            {
+              "name": "preferCssPageSize",
+              "value": "true"
+            },
+            {
+              "name": "waitDelay",
+              "value": "3s"
+            },
+            {
+              "name": "waitForExpression",
+              "value": "window.chartsReady === true"
+            },
+            {
+              "name": "scale",
+              "value": "0.85"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "2770bd32-cdac-40d6-8ebf-3c127a3ae5af",
+      "name": "Generate PDF1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        2320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#daily-leads-new-telecrm",
+          "mode": "name"
+        },
+        "text": "={{ $('Build Report Data1').item.json.slack_summary }}",
+        "otherOptions": {}
+      },
+      "name": "Slack Summary1",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "webhookId": "99f07c21-8ea5-4aac-a74a-107359c328c8",
+      "id": "3ca4f70c-9ebb-4ae0-852f-42124ac38c1b",
+      "position": [
+        688,
+        2176
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "kkDNoaIEWNf1xw0G",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "options": {
+          "channelId": "#daily-leads-new-telecrm",
+          "fileName": "=new_telecrm_report_{{ $('Generate HTML1').item.json.iso_date }}.html",
+          "initialComment": "=HTML report (new-telecrm) for {{ $('Generate HTML1').item.json.date_label }}"
+        }
+      },
+      "name": "Slack HTML1",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "webhookId": "00ad3648-616c-4fa4-bc8c-edbaa6949718",
+      "id": "4743a8b1-ec15-4411-96f1-c147213b272f",
+      "position": [
+        688,
+        2320
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "kkDNoaIEWNf1xw0G",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "options": {
+          "channelId": "#daily-leads-new-telecrm",
+          "fileName": "=new_telecrm_report_{{ $('Generate HTML1').item.json.iso_date }}.pdf",
+          "initialComment": "=PDF report (new-telecrm) for {{ $('Generate HTML1').item.json.date_label }}"
+        }
+      },
+      "name": "Slack PDF1",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "webhookId": "c2cd442f-a774-4ff4-a564-0be0d730fb59",
+      "id": "1c4bdc09-41e5-4703-8a38-c26c3b85b4f7",
+      "position": [
+        688,
+        2448
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "kkDNoaIEWNf1xw0G",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Daily 8:30AM IST": {
+      "main": [
+        [
+          {
+            "node": "Calculate Windows1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Windows1": {
+      "main": [
+        [
+          {
+            "node": "Facet Query (new-telecrm)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query WTD1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Prev Week1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Appointments Today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facet Query (new-telecrm)": {
+      "main": [
+        [
+          {
+            "node": "Merge All Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query WTD1": {
+      "main": [
+        [
+          {
+            "node": "Merge All Queries",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Query Prev Week1": {
+      "main": [
+        [
+          {
+            "node": "Merge All Queries",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Query Appointments Today": {
+      "main": [
+        [
+          {
+            "node": "Merge All Queries",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge All Queries": {
+      "main": [
+        [
+          {
+            "node": "Flatten to Tagged Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten to Tagged Items": {
+      "main": [
+        [
+          {
+            "node": "Build Report Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report Data1": {
+      "main": [
+        [
+          {
+            "node": "Enrich Appt Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Appt Status": {
+      "main": [
+        [
+          {
+            "node": "Generate HTML1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate HTML1": {
+      "main": [
+        [
+          {
+            "node": "HTML to Binary1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Summary1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTML to Binary1": {
+      "main": [
+        [
+          {
+            "node": "Generate PDF1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack HTML1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate PDF1": {
+      "main": [
+        [
+          {
+            "node": "Slack PDF1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Test Date1": {
+      "main": [
+        [
+          {
+            "node": "Calculate Windows1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

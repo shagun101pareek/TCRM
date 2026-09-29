@@ -1,0 +1,21 @@
+{
+  "name": "telecrm-agent-workspace",
+  "private": true,
+  "description": "TeleCRM × Stance Dashboard join (n8n + Node). Agent MCP and scripts are Node stdlib only.",
+  "scripts": {
+    "mcp": "node mcp/server/index.js",
+    "mcp:test": "node mcp/server/index.js --self-test",
+    "inspect": "node scripts/inspect-repo.js",
+    "status": "node scripts/check-status.js",
+    "snapshot": "node scripts/snapshot-baseline.js",
+    "snapshot:start": "node scripts/snapshot-baseline.js --task-start",
+    "changes": "node scripts/detect-changes.js",
+    "validate": "node scripts/validate.js",
+    "context": "node scripts/update-context.js",
+    "changelog": "node scripts/update-changelog.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "mongodb": "^7.6.0"
+  }
+}

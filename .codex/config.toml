@@ -1,0 +1,18 @@
+[mcp_servers.n8n-api]
+command = "node"
+args = ["mcp/n8n-api/index.js"]
+
+[mcp_servers.platforms]
+command = "node"
+args = ["mcp/platforms/index.js"]
+
+[mcp_servers.telecrm-api]
+command = "node"
+args = ["mcp/telecrm-api/index.js"]
+
+[mcp_servers.telecrm-repo]
+command = "node"
+args = ["mcp/server/index.js"]
+
+[mcp_servers.postman]
+url = "https://mcp.postman.com/code"

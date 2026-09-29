@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "platforms": {
+      "command": "node",
+      "args": ["mcp/platforms/index.js"]
+    },
+    "telecrm-repo": {
+      "command": "node",
+      "args": ["mcp/server/index.js"]
+    },
+    "telecrm-api": {
+      "command": "node",
+      "args": ["mcp/telecrm-api/index.js"]
+    },
+    "n8n-api": {
+      "command": "node",
+      "args": ["mcp/n8n-api/index.js"]
+    },
+    "postman": {
+      "url": "https://mcp.postman.com/code"
+    }
+  }
+}

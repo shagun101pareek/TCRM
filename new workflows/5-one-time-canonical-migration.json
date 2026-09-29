@@ -1,0 +1,53 @@
+{
+  "name": "One-time — Canonical new-telecrm Migration",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "canonical-manual",
+      "name": "Manual Trigger Only",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "notes": "Inactive one-time migration. Review and run manually after backup; it never runs on a schedule."
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "[{\"$set\":{\"__rawSource\":{\"$let\":{\"vars\":{\"legacy\":{\"$cond\":[{\"$eq\":[{\"$type\":\"$final_source\"},\"array\"]},\"$final_source\",[]]},\"current\":{\"$cond\":[{\"$eq\":[{\"$type\":\"$source\"},\"array\"]},\"$source\",[]]}},\"in\":{\"$cond\":[{\"$gt\":[{\"$size\":\"$$current\"},0]},\"$$current\",\"$$legacy\"]}}}}},{\"$set\":{\"source\":{\"$map\":{\"input\":{\"$filter\":{\"input\":\"$__rawSource\",\"as\":\"entry\",\"cond\":{\"$and\":[{\"$eq\":[{\"$type\":\"$$entry\"},\"object\"]},{\"$ne\":[{\"$ifNull\":[\"$$entry.source\",\"$$entry.value\"]},\"\"]}]}}},\"as\":\"entry\",\"in\":{\"$arrayToObject\":{\"$filter\":{\"input\":{\"$objectToArray\":{\"source\":{\"$ifNull\":[\"$$entry.source\",\"$$entry.value\"]},\"occurred_at\":{\"$ifNull\":[\"$$entry.occurred_at\",{\"$ifNull\":[\"$$entry.dateISO\",\"$$entry.date\"]}]},\"utm_source\":\"$$entry.utm_source\",\"utm_medium\":\"$$entry.utm_medium\",\"utm_campaign\":{\"$ifNull\":[\"$$entry.utm_campaign\",\"$$entry.utmCampaign\"]},\"campaign_id\":\"$$entry.campaign_id\",\"campaign_name\":{\"$ifNull\":[\"$$entry.campaign_name\",\"$$entry.campaign\"]},\"lead_id\":\"$$entry.lead_id\",\"ad_id\":\"$$entry.ad_id\",\"ad_name\":{\"$ifNull\":[\"$$entry.ad_name\",{\"$ifNull\":[\"$$entry.ad\",\"$$entry.content\"]}]},\"ad_set_id\":\"$$entry.ad_set_id\",\"ad_set_name\":\"$$entry.ad_set_name\",\"ctwa_id\":\"$$entry.ctwa_id\",\"ctwa_source\":{\"$ifNull\":[\"$$entry.ctwa_source\",\"$$entry.ctwa_source_id\"]}}},\"as\":\"field\",\"cond\":{\"$and\":[{\"$ne\":[\"$$field.v\",null]},{\"$ne\":[\"$$field.v\",\"\"]}]}}}}}},\"stage\":{\"$map\":{\"input\":{\"$filter\":{\"input\":{\"$cond\":[{\"$eq\":[{\"$type\":\"$stage\"},\"array\"]},\"$stage\",[]]},\"as\":\"entry\",\"cond\":{\"$and\":[{\"$ne\":[{\"$ifNull\":[\"$$entry.platform\",\"\"]},\"\"]},{\"$ne\":[{\"$ifNull\":[\"$$entry.status\",\"\"]},\"\"]}]}}},\"as\":\"entry\",\"in\":{\"$arrayToObject\":{\"$filter\":{\"input\":{\"$objectToArray\":{\"platform\":\"$$entry.platform\",\"status\":\"$$entry.status\",\"occurred_at\":{\"$ifNull\":[\"$$entry.occurred_at\",{\"$ifNull\":[\"$$entry.dateISO\",\"$$entry.date\"]}]}}},\"as\":\"field\",\"cond\":{\"$and\":[{\"$ne\":[\"$$field.v\",null]},{\"$ne\":[\"$$field.v\",\"\"]}]}}}}}},\"temperature\":{\"$cond\":[{\"$in\":[\"$conversionStatus\",[\"Converted\",\"Not Converted\"]]},\"$$REMOVE\",{\"$ifNull\":[\"$temperature\",\"$lead_temperature\"]}]},\"calculated_at\":{\"$cond\":[{\"$in\":[\"$conversionStatus\",[\"Converted\",\"Not Converted\"]]},\"$$REMOVE\",{\"$ifNull\":[\"$calculated_at\",\"$temperature_calculated_at\"]}]},\"temperature_derived\":{\"$cond\":[{\"$in\":[\"$conversionStatus\",[\"Converted\",\"Not Converted\"]]},\"$$REMOVE\",\"$temperature_derived\"]},\"last_synced_at\":{\"$ifNull\":[\"$last_synced_at\",\"$modified_at\"]},\"telecrm_#ofCalls\":{\"$cond\":[{\"$eq\":[\"$telecrm_#ofCalls\",0]},\"$$REMOVE\",\"$telecrm_#ofCalls\"]},\"telecrm_#ofmessages\":{\"$cond\":[{\"$eq\":[\"$telecrm_#ofmessages\",0]},\"$$REMOVE\",\"$telecrm_#ofmessages\"]}}},{\"$unset\":[\"temperature_outcome\",\"temperature_rule\",\"dash_firstVisitAppointments\",\"lead_temperature\",\"temperature_calculated_at\",\"__rawSource\",\"final_source\"]},{\"$replaceRoot\":{\"newRoot\":{\"$arrayToObject\":{\"$filter\":{\"input\":{\"$objectToArray\":\"$$ROOT\"},\"as\":\"field\",\"cond\":{\"$and\":[{\"$in\":[\"$$field.k\",[\"_id\",\"phone\",\"name\",\"conversionStatus\",\"dash_status\",\"dash_patient_id\",\"dash_firstName\",\"dash_lastName\",\"dash_email\",\"dash_gender\",\"dash_dob\",\"dash_patientType\",\"dash_consultant\",\"dash_centers_id\",\"dash_firstvisitapppointment\",\"telecrm_form_branch\",\"telecrm_form_city\",\"telecrm_form_postcode\",\"telecrm_form_health_concern\",\"telecrm_#ofCalls\",\"telecrm_#ofmessages\",\"telecrm_connected_calls\",\"telecrm_first_interaction_date\",\"telecrm_first_call_done\",\"telecrm_last_contacted_date\",\"telecrm_drop_off_reason\",\"telecrm_capture_frequency\",\"source\",\"stage\",\"created_on\",\"created_at\",\"modified_at\",\"last_synced_at\",\"temperature\",\"calculated_at\",\"temperature_derived\"]]},{\"$ne\":[\"$$field.v\",null]},{\"$ne\":[\"$$field.v\",\"\"]}]}}}}}},{\"$merge\":{\"into\":\"new-telecrm\",\"on\":\"_id\",\"whenMatched\":\"replace\",\"whenNotMatched\":\"discard\"}}]",
+        "options": {}
+      },
+      "id": "canonical-migrate",
+      "name": "Project Canonical Schema",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        560,
+        300
+      ],
+      "notes": "Compacts source/stage, renames temperature fields, drops nulls and dash_firstVisitAppointments, unsets temperature on Converted/Not Converted, then replace-merges by _id. Manual trigger only."
+    }
+  ],
+  "connections": {
+    "Manual Trigger Only": {
+      "main": [
+        [
+          {
+            "node": "Project Canonical Schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "canonical-migration-v1"
+}

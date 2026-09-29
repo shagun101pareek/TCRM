@@ -1,0 +1,634 @@
+{
+  "name": "4-temperature-realtime-and-nightly",
+  "nodes": [
+    {
+      "id": "2cf6ff1a-abc5-447c-9d45-8a632b8ccec6",
+      "name": "Mongo Change Trigger",
+      "type": "n8n-nodes-mongo-change-stream-trigger.mongoChangeTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "database": "stance-dashboard",
+        "collection": "new-telecrm",
+        "fields": "*",
+        "operationTypes": [
+          "insert",
+          "update"
+        ]
+      }
+    },
+    {
+      "id": "45d3aea4-d3b6-4d6a-a74b-bb9bc2874e9e",
+      "name": "Load Doc by ID",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ JSON.stringify([{ '$match': { '$expr': { '$eq': [{ '$toString': '$_id' }, $json.documentId] } } }, { '$limit': 1 }]) }}"
+      }
+    },
+    {
+      "id": "60eab804-822d-43e9-a875-a9f5ff52cabc",
+      "name": "Extract Phone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const trigger = $('Mongo Change Trigger').first().json;\nconst doc = $input.first().json;\n\nfunction normalizePhone(r) {\n  let s = String(r ?? '').replace(/[^0-9]/g, '');\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  return s;\n}\n\nconst phone = normalizePhone(doc.phone || '');\nif (phone.length !== 10) {\n  // Log why — visible in n8n execution output tab\n  console.log('SKIP: invalid phone', doc.phone);\n  return [];\n}\n\nconst operation = trigger.operation || trigger.operationType || '';\nconst modifiedFields = Object.keys(trigger.modifiedFields || {});\n\nconst TEMP_FIELDS = new Set([\n  'temperature', 'calculated_at', 'temperature_derived',\n  'lead_temperature', 'temperature_outcome', 'temperature_rule',\n  'temperature_calculated_at'\n]);\n\n// Block replace events — these come from $merge/replaceOne (temperature workflow's own writes)\nif (operation === 'replace') {\n  console.log('SKIP: replace event (self-triggered by temperature write)');\n  return [];\n}\n\n// Block update events where ONLY temperature fields changed\nif (modifiedFields.length > 0 && modifiedFields.every(f => TEMP_FIELDS.has(f))) {\n  console.log('SKIP: only temperature fields changed:', modifiedFields.join(', '));\n  return [];\n}\n\nconsole.log('PASS: operation=' + operation + ' modifiedFields=' + modifiedFields.join(', '));\nreturn [{ json: { phone } }];"
+      }
+    },
+    {
+      "id": "b8dc4d7f-4513-4e59-8ee6-afb639e69d93",
+      "name": "TeleCRM Search (Realtime)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://next.telecrm.in/autoupdate/v2/enterprise/69da237dbbfc0db1fc1ea6e2/lead/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { fields: { phone: '91' + String($json.phone || '').replace(/[^0-9]/g, '').slice(-10) } } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Fetches the live TeleCRM lead because the three-question scorer requires fields not stored in new-telecrm."
+    },
+    {
+      "id": "bd346155-1871-4cce-89e1-5e92151a58bc",
+      "name": "Calculate Temperature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// TeleCRM Lead Temperature — nightly batch scorer\n// Source of truth: live TeleCRM API (lead/search response).\n// Always score every stage (including Session booked / Converted).\n// TeleCRM POSTs must include current status so temperature-only updates\n// cannot reopen the lead to Fresh.\n\nconst NEW_LEAD_DAYS = 14;\nconst MESSAGE_DAYS = 7;\nconst CALL_DAYS = 7;\nconst DEAD_CALLS = 6;\n\nfunction firstDefined(...values) {\n  for (const v of values) { if (v !== undefined && v !== null && v !== '') return v; }\n  return null;\n}\nfunction get(lead, ...keys) {\n  const fields = lead && lead.fields && typeof lead.fields === 'object' ? lead.fields : {};\n  for (const key of keys) {\n    const direct = lead?.[key];\n    if (direct !== undefined && direct !== null && direct !== '') return direct;\n    const nested = fields?.[key];\n    if (nested !== undefined && nested !== null && nested !== '') return nested;\n  }\n  return null;\n}\nfunction toMs(value) {\n  if (value === undefined || value === null || value === '') return null;\n  if (value instanceof Date) { const ms = value.getTime(); return Number.isNaN(ms) ? null : ms; }\n  if (typeof value === 'number') { if (!Number.isFinite(value)) return null; return value < 1e12 ? value * 1000 : value; }\n  const s = String(value).trim();\n  if (!s) return null;\n  const numeric = Number(s);\n  if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;\n  const parsed = new Date(s);\n  return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();\n}\nfunction daysBetween(nowMs, value) {\n  const ts = toMs(value);\n  if (ts === null) return null;\n  return Math.max(0, Math.floor((nowMs - ts) / 86400000));\n}\nfunction normalizePhone(raw) {\n  let s = String(raw ?? '').replace(/[^0-9]/g, '');\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  return s;\n}\nfunction numericOrZero(value) {\n  const n = Number(value);\n  return Number.isFinite(n) && n >= 0 ? n : 0;\n}\nfunction unwrapLead(raw) {\n  if (!raw || typeof raw !== 'object') return null;\n  if (Array.isArray(raw.data)) { if (!raw.data.length) return null; return raw.data[0]; }\n  if (raw.fields || raw.status || raw.phone || raw.Phone) return raw;\n  return null;\n}\nfunction derivedFor(parts) {\n  return {\n    attempts: parts.calls ?? 0,\n    connected: parts.connected ?? 0,\n    d_captured: parts.dCaptured ?? null,\n    d_inbound: parts.dMessage ?? null,\n    d_call: parts.dCall ?? null,\n  };\n}\nfunction result(status, temperature, shouldWrite, derived, shouldClear) {\n  return { status, temperature, should_write_temperature: shouldWrite, should_clear_temperature: !!shouldClear, derived };\n}\n\nfunction calculateTemperature(lead, nowMs) {\n  const status = String(get(lead, 'Status', 'status', 'conversionStatus') ?? '').trim();\n  const calls = numericOrZero(get(lead, 'Calls Count', '#ofCalls', 'telecrm_#ofCalls', 'calls_count', 'callsCount'));\n  const connected = numericOrZero(get(lead, 'Connected Call Count', 'connected_call_count', 'connectedCallCount'));\n  const capturedOn = firstDefined(\n    get(lead, 'Captured On', 'captured_on', 'capturedOn'),\n    get(lead, 'Created On', 'created_on', 'createdOn', 'created_at', 'createdAt')\n  );\n  const lastIncomingWhatsApp = get(lead, 'Last Incoming WhatsApp On', 'last_incoming_whatsapp_on', 'lastIncomingWhatsAppOn');\n  const lastCall = get(lead, 'Last Call', 'last_call', 'lastCall');\n\n  const dCaptured = daysBetween(nowMs, capturedOn);\n  const dMessage = daysBetween(nowMs, lastIncomingWhatsApp);\n  const dCall = daysBetween(nowMs, lastCall);\n\n  const qNew = dCaptured !== null && dCaptured < NEW_LEAD_DAYS;\n  const qMessage = dMessage !== null && dMessage <= MESSAGE_DAYS;\n  const qCall = dCall !== null && dCall <= CALL_DAYS && connected > 1;\n\n  const derived = derivedFor({ calls, connected, dCaptured, dMessage, dCall });\n\n  if (!status) return result('', null, false, derived, false);\n  if (calls > DEAD_CALLS && connected === 0) return result(status, 'COLD', true, derived);\n\n  const score = Number(qNew) + Number(qMessage) + Number(qCall);\n  if (score >= 2) return result(status, 'HOT', true, derived);\n  if (score === 1) return result(status, 'WARM', true, derived);\n  return result(status, 'COLD', true, derived);\n}\n\nfunction skipItem(phone, nowMs) {\n  return { json: { phone: phone || '', current_status: null, temperature: null, calculated_at: new Date(nowMs).toISOString(), temperature_derived: null, should_write_temperature: false, should_clear_temperature: false, telecrm_phone: phone && phone.length === 10 ? ('91' + phone) : null, telecrm_temperature: null } };\n}\n\nconst nowMs = Date.now();\nconst output = [];\nfor (const item of $input.all()) {\n  const raw = item.json ?? {};\n  const lead = unwrapLead(raw);\n  const phone = normalizePhone(get(lead || raw, 'phone', 'Phone', 'Phone Number', 'phone_number'));\n  if (!lead || phone.length !== 10) { output.push(skipItem(phone, nowMs)); continue; }\n  const calc = calculateTemperature(lead, nowMs);\n  const canPush = calc.should_write_temperature === true && !!calc.status && calc.temperature != null;\n  output.push({ json: { phone, current_status: calc.status || null, temperature: calc.temperature, calculated_at: new Date(nowMs).toISOString(), temperature_derived: calc.derived, should_write_temperature: canPush, should_clear_temperature: calc.should_clear_temperature, telecrm_phone: '91' + phone, telecrm_temperature: calc.temperature === null ? null : calc.temperature.toLowerCase() } });\n}\nreturn output;\n"
+      }
+    },
+    {
+      "id": "c8bb0ed7-42e8-4615-9e83-61a3ee6a8280",
+      "name": "Temperature Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "write-temperature-condition",
+              "leftValue": "={{ $json.should_write_temperature }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "require-current-status",
+              "leftValue": "={{ $json.current_status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "3f990f65-2939-42ec-bfa0-2b73e5af5d42",
+      "name": "Update new-telecrm",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        200
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ (() => { const phone = $json.phone; const write = $json.should_write_temperature === true; const clear = $json.should_clear_temperature === true; const d = $json.temperature_derived || {}; const unset = ['lead_temperature', 'temperature_calculated_at', 'temperature_outcome', 'temperature_rule']; if (clear) unset.push('temperature', 'calculated_at', 'temperature_derived'); const stages = [{ '$match': { phone } }]; if (write) { stages.push({ '$set': { temperature: $json.temperature, calculated_at: $json.calculated_at, temperature_derived: { attempts: d.attempts ?? 0, connected: d.connected ?? 0, d_captured: d.d_captured ?? null, d_inbound: d.d_inbound ?? null, d_call: d.d_call ?? null } } }); } stages.push({ '$unset': unset }); stages.push({ '$merge': { into: 'new-telecrm', on: '_id', whenMatched: 'replace', whenNotMatched: 'discard' } }); return JSON.stringify(stages); })() }}"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "c2dc2195-70f1-49d9-8cfc-60718a926147",
+      "name": "Push Temperature to TeleCRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1540,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://next-api.telecrm.in/enterprise/69da237dbbfc0db1fc1ea6e2/autoupdatelead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"fields\": {\n    \"phone\": \"={{ $json.telecrm_phone }}\",\n    \"status\": \"={{ $json.current_status }}\",\n    \"temperature\": \"={{ $json.telecrm_temperature }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {}
+          },
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "n-schedule",
+      "name": "Nightly Temperature Run",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        -200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n-strip",
+      "name": "Strip Legacy Temperature Fields",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        220,
+        -200
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ JSON.stringify([{ '$match': { '$or': [{ temperature_outcome: { '$exists': true } }, { temperature_rule: { '$exists': true } }, { 'temperature_derived.status': { '$exists': true } }, { 'temperature_derived.d_status': { '$exists': true } }, { 'temperature_derived.future_session': { '$exists': true } }] } }, { '$set': { temperature_derived: { '$cond': [{ '$eq': [{ '$type': '$temperature_derived' }, 'object'] }, { attempts: { '$ifNull': ['$temperature_derived.attempts', 0] }, connected: { '$ifNull': ['$temperature_derived.connected', 0] }, d_captured: { '$ifNull': ['$temperature_derived.d_captured', '$temperature_derived.d_status'] }, d_inbound: '$temperature_derived.d_inbound', d_call: '$temperature_derived.d_call' }, '$temperature_derived'] } } }, { '$project': { temperature_outcome: 0, temperature_rule: 0 } }, { '$merge': { into: 'new-telecrm', on: '_id', whenMatched: 'replace', whenNotMatched: 'discard' } }]) }}"
+      }
+    },
+    {
+      "id": "n-verify",
+      "name": "Verify Legacy Fields Removed",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        640,
+        -200
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ JSON.stringify([{ '$facet': { total: [{ '$count': 'count' }], remaining: [{ '$match': { '$or': [{ temperature_outcome: { '$exists': true } }, { temperature_rule: { '$exists': true } }, { 'temperature_derived.status': { '$exists': true } }, { 'temperature_derived.d_status': { '$exists': true } }, { 'temperature_derived.future_session': { '$exists': true } }] } }, { '$count': 'count' }] } }, { '$project': { _id: 0, total_new_telecrm_docs: { '$ifNull': [{ '$arrayElemAt': ['$total.count', 0] }, 0] }, remaining_legacy_temperature_docs: { '$ifNull': [{ '$arrayElemAt': ['$remaining.count', 0] }, 0] } } }]) }}"
+      }
+    },
+    {
+      "id": "n-assert",
+      "name": "Require Clean Temperature Schema",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "const total = Number($json.total_new_telecrm_docs ?? -1);\nconst remaining = Number($json.remaining_legacy_temperature_docs ?? -1);\nif (!Number.isFinite(total) || total <= 0) {\n  throw new Error('Temperature workflow is connected to an empty new-telecrm collection. Select the same production MongoDB credential/database used by Sync before running cleanup or scoring.');\n}\nif (!Number.isFinite(remaining) || remaining !== 0) {\n  throw new Error(`Legacy temperature cleanup incomplete: ${remaining} of ${total} document(s) still contain temperature_outcome, temperature_rule, or obsolete temperature_derived keys`);\n}\nreturn [{ json: { workflow_version: 'four-temperature-realtime', cleanup_verified: true, total_new_telecrm_docs: total, remaining_legacy_temperature_docs: 0 } }];"
+      }
+    },
+    {
+      "id": "n-load-leads",
+      "name": "Load TeleCRM Leads",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        -200
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ JSON.stringify([{ '$match': { conversionStatus: { '$nin': ['Converted', 'Not Converted'] } } }, { '$project': { phone: 1, conversionStatus: 1 } }]) }}"
+      }
+    },
+    {
+      "id": "n-split",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        -200
+      ],
+      "parameters": {
+        "batchSize": 25,
+        "options": {}
+      }
+    },
+    {
+      "id": "n-search",
+      "name": "TeleCRM Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1320,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://next.telecrm.in/autoupdate/v2/enterprise/69da237dbbfc0db1fc1ea6e2/lead/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { fields: { phone: '91' + String($json.phone || '').replace(/[^0-9]/g, '').slice(-10) } } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "n-calc",
+      "name": "Calculate Temperature (Nightly)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// TeleCRM Lead Temperature — nightly batch scorer\n// Source of truth: live TeleCRM API (lead/search response).\n// Always score every stage (including Session booked / Converted).\n// TeleCRM POSTs must include current status so temperature-only updates\n// cannot reopen the lead to Fresh.\n\nconst NEW_LEAD_DAYS = 14;\nconst MESSAGE_DAYS = 7;\nconst CALL_DAYS = 7;\nconst DEAD_CALLS = 6;\n\nfunction firstDefined(...values) {\n  for (const v of values) { if (v !== undefined && v !== null && v !== '') return v; }\n  return null;\n}\nfunction get(lead, ...keys) {\n  const fields = lead && lead.fields && typeof lead.fields === 'object' ? lead.fields : {};\n  for (const key of keys) {\n    const direct = lead?.[key];\n    if (direct !== undefined && direct !== null && direct !== '') return direct;\n    const nested = fields?.[key];\n    if (nested !== undefined && nested !== null && nested !== '') return nested;\n  }\n  return null;\n}\nfunction toMs(value) {\n  if (value === undefined || value === null || value === '') return null;\n  if (value instanceof Date) { const ms = value.getTime(); return Number.isNaN(ms) ? null : ms; }\n  if (typeof value === 'number') { if (!Number.isFinite(value)) return null; return value < 1e12 ? value * 1000 : value; }\n  const s = String(value).trim();\n  if (!s) return null;\n  const numeric = Number(s);\n  if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;\n  const parsed = new Date(s);\n  return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();\n}\nfunction daysBetween(nowMs, value) {\n  const ts = toMs(value);\n  if (ts === null) return null;\n  return Math.max(0, Math.floor((nowMs - ts) / 86400000));\n}\nfunction normalizePhone(raw) {\n  let s = String(raw ?? '').replace(/[^0-9]/g, '');\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  return s;\n}\nfunction numericOrZero(value) {\n  const n = Number(value);\n  return Number.isFinite(n) && n >= 0 ? n : 0;\n}\nfunction unwrapLead(raw) {\n  if (!raw || typeof raw !== 'object') return null;\n  if (Array.isArray(raw.data)) { if (!raw.data.length) return null; return raw.data[0]; }\n  if (raw.fields || raw.status || raw.phone || raw.Phone) return raw;\n  return null;\n}\nfunction derivedFor(parts) {\n  return {\n    attempts: parts.calls ?? 0,\n    connected: parts.connected ?? 0,\n    d_captured: parts.dCaptured ?? null,\n    d_inbound: parts.dMessage ?? null,\n    d_call: parts.dCall ?? null,\n  };\n}\nfunction result(status, temperature, shouldWrite, derived, shouldClear) {\n  return { status, temperature, should_write_temperature: shouldWrite, should_clear_temperature: !!shouldClear, derived };\n}\n\nfunction calculateTemperature(lead, nowMs) {\n  const status = String(get(lead, 'Status', 'status', 'conversionStatus') ?? '').trim();\n  const calls = numericOrZero(get(lead, 'Calls Count', '#ofCalls', 'telecrm_#ofCalls', 'calls_count', 'callsCount'));\n  const connected = numericOrZero(get(lead, 'Connected Call Count', 'connected_call_count', 'connectedCallCount'));\n  const capturedOn = firstDefined(\n    get(lead, 'Captured On', 'captured_on', 'capturedOn'),\n    get(lead, 'Created On', 'created_on', 'createdOn', 'created_at', 'createdAt')\n  );\n  const lastIncomingWhatsApp = get(lead, 'Last Incoming WhatsApp On', 'last_incoming_whatsapp_on', 'lastIncomingWhatsAppOn');\n  const lastCall = get(lead, 'Last Call', 'last_call', 'lastCall');\n\n  const dCaptured = daysBetween(nowMs, capturedOn);\n  const dMessage = daysBetween(nowMs, lastIncomingWhatsApp);\n  const dCall = daysBetween(nowMs, lastCall);\n\n  const qNew = dCaptured !== null && dCaptured < NEW_LEAD_DAYS;\n  const qMessage = dMessage !== null && dMessage <= MESSAGE_DAYS;\n  const qCall = dCall !== null && dCall <= CALL_DAYS && connected > 1;\n\n  const derived = derivedFor({ calls, connected, dCaptured, dMessage, dCall });\n\n  if (!status) return result('', null, false, derived, false);\n  if (calls > DEAD_CALLS && connected === 0) return result(status, 'COLD', true, derived);\n\n  const score = Number(qNew) + Number(qMessage) + Number(qCall);\n  if (score >= 2) return result(status, 'HOT', true, derived);\n  if (score === 1) return result(status, 'WARM', true, derived);\n  return result(status, 'COLD', true, derived);\n}\n\nfunction skipItem(phone, nowMs) {\n  return { json: { phone: phone || '', current_status: null, temperature: null, calculated_at: new Date(nowMs).toISOString(), temperature_derived: null, should_write_temperature: false, should_clear_temperature: false, telecrm_phone: phone && phone.length === 10 ? ('91' + phone) : null, telecrm_temperature: null } };\n}\n\nconst nowMs = Date.now();\nconst output = [];\nfor (const item of $input.all()) {\n  const raw = item.json ?? {};\n  const lead = unwrapLead(raw);\n  const phone = normalizePhone(get(lead || raw, 'phone', 'Phone', 'Phone Number', 'phone_number'));\n  if (!lead || phone.length !== 10) { output.push(skipItem(phone, nowMs)); continue; }\n  const calc = calculateTemperature(lead, nowMs);\n  const canPush = calc.should_write_temperature === true && !!calc.status && calc.temperature != null;\n  output.push({ json: { phone, current_status: calc.status || null, temperature: calc.temperature, calculated_at: new Date(nowMs).toISOString(), temperature_derived: calc.derived, should_write_temperature: canPush, should_clear_temperature: calc.should_clear_temperature, telecrm_phone: '91' + phone, telecrm_temperature: calc.temperature === null ? null : calc.temperature.toLowerCase() } });\n}\nreturn output;\n"
+      }
+    },
+    {
+      "id": "n-gate",
+      "name": "Temperature Available? (Nightly)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "nightly-write-gate",
+              "leftValue": "={{ $json.should_write_temperature }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "require-current-status",
+              "leftValue": "={{ $json.current_status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "n-update",
+      "name": "Update new-telecrm (Nightly)",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        2180,
+        -100
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ (() => { const phone = $json.phone; const write = $json.should_write_temperature === true; const clear = $json.should_clear_temperature === true; const d = $json.temperature_derived || {}; const unset = ['lead_temperature', 'temperature_calculated_at', 'temperature_outcome', 'temperature_rule']; if (clear) unset.push('temperature', 'calculated_at', 'temperature_derived'); const stages = [{ '$match': { phone } }]; if (write) { stages.push({ '$set': { temperature: $json.temperature, calculated_at: $json.calculated_at, temperature_derived: { attempts: d.attempts ?? 0, connected: d.connected ?? 0, d_captured: d.d_captured ?? null, d_inbound: d.d_inbound ?? null, d_call: d.d_call ?? null } } }); } stages.push({ '$unset': unset }); stages.push({ '$merge': { into: 'new-telecrm', on: '_id', whenMatched: 'replace', whenNotMatched: 'discard' } }); return JSON.stringify(stages); })() }}"
+      }
+    },
+    {
+      "id": "n-push",
+      "name": "Push Temperature to TeleCRM (Nightly)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2180,
+        -300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://next-api.telecrm.in/enterprise/69da237dbbfc0db1fc1ea6e2/autoupdatelead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"fields\": {\n    \"phone\": \"={{ $json.telecrm_phone }}\",\n    \"status\": \"={{ $json.current_status }}\",\n    \"temperature\": \"={{ $json.telecrm_temperature }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "n-next",
+      "name": "Next Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { next: true } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Mongo Change Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Doc by ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Doc by ID": {
+      "main": [
+        [
+          {
+            "node": "Extract Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Phone": {
+      "main": [
+        [
+          {
+            "node": "TeleCRM Search (Realtime)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Temperature": {
+      "main": [
+        [
+          {
+            "node": "Update new-telecrm",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Temperature Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Temperature Available?": {
+      "main": [
+        [
+          {
+            "node": "Push Temperature to TeleCRM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Nightly Temperature Run": {
+      "main": [
+        [
+          {
+            "node": "Strip Legacy Temperature Fields",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Load TeleCRM Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strip Legacy Temperature Fields": {
+      "main": [
+        []
+      ]
+    },
+    "Load TeleCRM Leads": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [],
+        [
+          {
+            "node": "TeleCRM Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TeleCRM Search": {
+      "main": [
+        [
+          {
+            "node": "Calculate Temperature (Nightly)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Temperature (Nightly)": {
+      "main": [
+        [
+          {
+            "node": "Update new-telecrm (Nightly)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Temperature Available? (Nightly)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Temperature Available? (Nightly)": {
+      "main": [
+        [
+          {
+            "node": "Push Temperature to TeleCRM (Nightly)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Next Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update new-telecrm (Nightly)": {
+      "main": [
+        [
+          {
+            "node": "Next Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Next Batch": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TeleCRM Search (Realtime)": {
+      "main": [
+        [
+          {
+            "node": "Calculate Temperature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "telecrm-server2server"
+  }
+}

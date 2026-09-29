@@ -1,0 +1,648 @@
+{
+  "name": "new-telecrm | 1. Sync (Webhook)",
+  "nodes": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "new-telecrm-sync",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telecrm",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "name": "Normalize Phone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ],
+      "parameters": {
+        "jsCode": "function normPhone10(raw) {\n  let s = String(raw == null ? '' : raw).trim().replace(/[^0-9]/g, '');\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  return s;\n}\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json.body || item.json;\n  const fields = body.fields || body;\n  const rawPhone = fields.phone;\n  if (!rawPhone) throw new Error('Missing phone in payload');\n  const phone10 = normPhone10(rawPhone);\n  if (phone10.length !== 10) throw new Error('Invalid phone: ' + rawPhone);\n  out.push({ json: { phone10 } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "name": "TeleCRM Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://next.telecrm.in/autoupdate/v2/enterprise/69da237dbbfc0db1fc1ea6e2/lead/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { fields: { phone: '91' + $json.phone10 } } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_TELECRM_SYNC_CRED_ID",
+          "name": "TeleCRM Sync Token"
+        }
+      }
+    },
+    {
+      "id": "44444444-4444-4444-4444-444444444444",
+      "name": "IF Lead Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-001",
+              "leftValue": "={{ Array.isArray($json.data) ? $json.data.length : 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "notes": "True = UPDATE/join path (lead exists in TeleCRM). False = no lead \u2014 Sync does not create; use WF3 create branch for dashboard walk-ins."
+    },
+    {
+      "id": "55555555-5555-5555-5555-555555555555",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        520
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"error\": \"Lead not found in TeleCRM \u2014 Sync is the update/join path. Create walk-ins via WF3 create branch.\" }",
+        "options": {
+          "responseCode": 404
+        }
+      }
+    },
+    {
+      "id": "66666666-6666-6666-6666-666666666666",
+      "name": "Load Existing Doc",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        1480,
+        300
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ (() => { const p = String(($('Normalize Phone').first().json || {}).phone10 || '').replace(/[^0-9]/g, ''); const s = (p.length === 12 && p.startsWith('91')) ? p.slice(2) : ((p.length === 11 && p.startsWith('0')) ? p.slice(1) : p); if (s.length !== 10) return JSON.stringify([{ '$limit': 0 }]); return JSON.stringify([{ '$match': { phone: { '$in': [s, '91' + s, '0' + s] } } }, { '$limit': 1 }]); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "77777777-7777-7777-7777-777777777777",
+      "name": "Find User",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        1560,
+        300
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "users",
+        "query": "={{ (() => { const p = String(($('Normalize Phone').first().json || {}).phone10 || '').replace(/[^0-9]/g, ''); if (p.length !== 10) return JSON.stringify([{ '$match': { _id: null } }]); return JSON.stringify([{ '$set': { '__phoneDigits': { '$replaceAll': { input: { '$replaceAll': { input: { '$replaceAll': { input: { '$replaceAll': { input: { '$replaceAll': { input: { '$toString': { '$ifNull': ['$phone', ''] } }, find: ' ', replacement: '' } }, find: '-', replacement: '' } }, find: '+', replacement: '' } }, find: '(', replacement: '' } }, find: ')', replacement: '' } } } }, { '$set': { '__phone10': { '$switch': { branches: [{ case: { '$and': [{ '$eq': [{ '$strLenCP': '$__phoneDigits' }, 12] }, { '$eq': [{ '$substrCP': ['$__phoneDigits', 0, 2] }, '91'] }] }, then: { '$substrCP': ['$__phoneDigits', 2, 10] } }, { case: { '$and': [{ '$eq': [{ '$strLenCP': '$__phoneDigits' }, 11] }, { '$eq': [{ '$substrCP': ['$__phoneDigits', 0, 1] }, '0'] }] }, then: { '$substrCP': ['$__phoneDigits', 1, 10] } }], default: '$__phoneDigits' } } } }, { '$match': { '__phone10': p } }, { '$sort': { updatedAt: -1 } }, { '$limit': 1 }, { '$unset': ['__phoneDigits', '__phone10'] }]); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "99999999-9999-9999-9999-999999999999",
+      "name": "Aggregate Appointments",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        2000,
+        300
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "appointments",
+        "query": "={{ (() => { const u = $json || {}; const uid = u && u._id ? String(u._id) : (u && u._userId ? String(u._userId) : null); let phone = String(u.phone || '').replace(/[^0-9]/g, ''); if (phone.length === 11 && phone.startsWith('0')) phone = phone.slice(1); if (phone.length === 12 && phone.startsWith('91')) phone = phone.slice(2); const keep = { '$addFields': { phone, _userId: uid } }; if (!uid) return JSON.stringify([{ '$facet': { appointments: [{ '$match': { _id: null } }] } }, keep]); return JSON.stringify([{ '$facet': { appointments: [{ '$match': { visitType: 'FIRST_VISIT', '$expr': { '$eq': [{ '$toString': '$patient' }, uid] } } }, { '$sort': { createdAt: 1 } }, { '$project': { _id: 0, visitType: 1, createdAt: 1, updatedAt: 1, report: { '$ifNull': ['$report', null] }, status: 1, cancellationReason: 1, rescheduledFrom: 1, rescheduledTo: 1, cancellationDetails: 1 } }] } }, keep]); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Find Web Visitor",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        2220,
+        300
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "web_visitors",
+        "query": "={{ (()=>{ const prev = $json || {}; const uid = String(prev._userId || ''); const phone = String(prev.phone || ''); const appointments = Array.isArray(prev.appointments) ? prev.appointments : []; const rows = (!uid || !/^[a-fA-F0-9]{24}$/.test(uid)) ? [{ '$match': { _id: null } }] : [{ '$match': { '$expr': { '$eq': ['$patient_id', { '$toObjectId': uid }] } } }, { '$limit': 1 }]; return JSON.stringify([{ '$facet': { rows } }, { '$replaceRoot': { newRoot: { '$mergeObjects': [{ phone, _userId: uid, appointments }, { visitor: { '$ifNull': [{ '$arrayElemAt': ['$rows', 0] }, {}] } }] } } }]); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Find Touchpoints",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        2440,
+        300
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "web_touchpoints",
+        "query": "={{ (()=>{ const prev = $json || {}; const visitor = (prev.visitor && typeof prev.visitor === 'object') ? prev.visitor : ((prev._id && !Array.isArray(prev.touchpoints)) ? prev : {}); const wvId = visitor && visitor._id ? String(visitor._id) : null; const phone = prev.phone || ''; const uid = prev._userId || ''; const appointments = Array.isArray(prev.appointments) ? prev.appointments : []; const visitorOut = (prev.visitor && typeof prev.visitor === 'object') ? prev.visitor : visitor; const tp = (!wvId || !/^[a-fA-F0-9]{24}$/.test(wvId)) ? [{ '$match': { _id: null } }] : [{ '$match': { '$expr': { '$eq': ['$visitor_id', { '$toObjectId': wvId }] } } }, { '$sort': { ts: 1 } }]; return JSON.stringify([{ '$facet': { touchpoints: tp } }, { '$replaceRoot': { newRoot: { '$mergeObjects': [{ phone, _userId: uid, appointments, visitor: visitorOut }, '$$ROOT'] } } }]); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "Build Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        300
+      ],
+      "parameters": {
+        "jsCode": "\nfunction normalizeTemperatureDerived(raw) {\n  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;\n  const numOrZero = (v) => {\n    const n = Number(v);\n    return Number.isFinite(n) && n >= 0 ? n : 0;\n  };\n  const dayOrNull = (v) => {\n    if (v === undefined || v === null || v === '') return null;\n    const n = Number(v);\n    return Number.isFinite(n) ? n : null;\n  };\n  const captured = raw.d_captured !== undefined && raw.d_captured !== null && raw.d_captured !== ''\n    ? raw.d_captured\n    : raw.d_status;\n  return {\n    attempts: numOrZero(raw.attempts),\n    connected: numOrZero(raw.connected),\n    d_captured: dayOrNull(captured),\n    d_inbound: dayOrNull(raw.d_inbound),\n    d_call: dayOrNull(raw.d_call),\n  };\n}\nfunction blank(v) {\n  if (v == null) return true;\n  const s = String(v).trim().toLowerCase();\n  return !s || s === '(absent)' || s === '(none)' || s === 'null' || s === 'undefined' || s === '(not set)';\n}\n\nfunction omitEmpty(obj) {\n  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;\n  const required = new Set(['phone', 'conversionStatus', 'source', 'stage', 'created_on', 'created_at', 'modified_at', 'last_synced_at']);\n  const out = {};\n  for (const [k, v] of Object.entries(obj)) {\n    if (k === 'temperature_derived' && v && typeof v === 'object' && !Array.isArray(v)) { out[k] = v; continue; }\n    if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) {\n      if (required.has(k)) out[k] = v;\n      continue;\n    }\n    if (Array.isArray(v)) {\n      if (!v.length && !required.has(k)) continue;\n      out[k] = v;\n      continue;\n    }\n    out[k] = v;\n  }\n  return out;\n}\nfunction tidyNumber(value) {\n  if (value === undefined || value === null || value === '') return undefined;\n  const n = Number(value);\n  return Number.isFinite(n) ? n : undefined;\n}\nfunction unwrapActivityValue(value) {\n  if (value && typeof value === 'object' && !Array.isArray(value)) {\n    if (value.value !== undefined && value.value !== null && value.value !== '') return value.value;\n    if (value.count !== undefined && value.count !== null && value.count !== '') return value.count;\n  }\n  return value;\n}\nfunction flattenLeadActivity(lead) {\n  if (!lead || typeof lead !== 'object' || Array.isArray(lead)) return {};\n  const nested = lead.fields && typeof lead.fields === 'object' && !Array.isArray(lead.fields) ? lead.fields : {};\n  const base = Object.assign({}, lead.fields ? nested : lead);\n  const keys = ['Calls Count', '# Calls Count', '#ofCalls', 'calls_count', 'callsCount', 'telecrm_#ofCalls', 'Messages sent lead', '# Messages sent lead', 'Messages Count', '# Messages Count', '#ofmessages', 'messages_count', 'messagesCount', 'Messages sent', 'telecrm_#ofmessages', 'Count of Connected Calls', 'Connected Call Count', '# Connected Call Count', 'connected_call_count', 'connectedCallCount'];\n  for (const key of keys) {\n    if (base[key] === undefined || base[key] === null || base[key] === '') {\n      if (lead[key] !== undefined && lead[key] !== null && lead[key] !== '') base[key] = lead[key];\n    }\n  }\n  return base;\n}\nfunction pickActivityCount(source, previous, keys) {\n  const live = [];\n  for (const key of keys) live.push(unwrapActivityValue(source && source[key]));\n  const n = tidyNumber(firstDefined.apply(null, live));\n  if (n !== undefined) return n;\n  const prev = tidyNumber(unwrapActivityValue(previous));\n  if (prev !== undefined && prev > 0) return prev;\n  return undefined;\n}\n\nfunction tidyBoolean(value) {\n  if (value === true || value === false) return value;\n  if (value === 1 || value === '1' || String(value).trim().toLowerCase() === 'true') return true;\n  if (value === 0 || value === '0' || String(value).trim().toLowerCase() === 'false') return false;\n  return undefined;\n}\nfunction firstCallDone(f, existing) {\n  const bool = tidyBoolean(firstDefined(f.first_call_done, f['First Call Done'], existing && existing.telecrm_first_call_done));\n  if (bool === true || bool === false) return bool;\n  return toIso(firstDefined(f['First Call Attempt'], f['First Call Attempt Date'], f.first_call_attempt)) ? true : undefined;\n}\n\n\nfunction norm(v) { return blank(v) ? '' : String(v).trim().toLowerCase(); }\nfunction tidy(v) { return blank(v) ? null : String(v).trim(); }\nfunction firstDefined(...vals) {\n  for (const v of vals) if (!blank(v)) return v;\n  return null;\n}\nfunction put(obj, key, val) {\n  const clean = tidy(val);\n  if (clean != null) obj[key] = clean;\n}\nfunction toMs(value) {\n  if (value == null || value === '') return null;\n  if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;\n  const numeric = Number(value);\n  if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;\n  const ms = new Date(value).getTime();\n  return Number.isNaN(ms) ? null : ms;\n}\nfunction toIso(value) {\n  const ms = toMs(value);\n  return ms == null ? null : new Date(ms).toISOString();\n}\nfunction leadSourceString(doc) {\n  if (typeof doc.lead_source === 'string' && !blank(doc.lead_source)) return String(doc.lead_source).trim();\n  if (typeof doc.lead_source_str === 'string' && !blank(doc.lead_source_str)) return String(doc.lead_source_str).trim();\n  const leadSources = Array.isArray(doc.lead_source) ? doc.lead_source : [];\n  for (let i = leadSources.length - 1; i >= 0; i--) {\n    const entry = leadSources[i];\n    if (typeof entry === 'string' && !blank(entry)) return String(entry).trim();\n    if (entry && !blank(entry.source)) return String(entry.source).trim();\n  }\n  return '';\n}\nfunction teleSourceValue(doc) {\n  if (!blank(doc.tele_source_value)) return String(doc.tele_source_value).trim();\n  const values = Array.isArray(doc.source) ? doc.source : [];\n  for (let i = values.length - 1; i >= 0; i--) {\n    const entry = values[i];\n    const value = entry && typeof entry === 'object' ? firstDefined(entry.value, entry.tele_source) : entry;\n    if (!blank(value)) return String(value).trim();\n  }\n  return '';\n}\nfunction referrerHost(ref) {\n  if (blank(ref)) return '';\n  const value = String(ref).trim();\n  try {\n    const parsed = new URL(/^https?:\\/\\//i.test(value) ? value : 'https://' + value);\n    return String(parsed.hostname || '').toLowerCase();\n  } catch (_) {\n    return value.toLowerCase().replace(/^https?:\\/\\//, '').split('/')[0];\n  }\n}\nfunction sourceFromCategory(category, analytics) {\n  const mapped = {\n    organic: 'dash_organic',\n    advocate: 'dash_advocate',\n    advertisement: 'dash_performance',\n    referral: 'dash_customer',\n    website: 'website',\n    doctor: 'dash_consultant',\n  };\n  const label = mapped[norm(category)] || null;\n  if (label !== 'website') return label;\n  const doc = analytics && typeof analytics === 'object' && !Array.isArray(analytics) ? analytics : null;\n  const utmSource = doc ? norm(firstDefined(doc.utm_source, doc.utmSource)) : '';\n  return utmSource ? 'website' : 'website_organic';\n}\nfunction sourceFromTeleLead(lead) {\n  const value = norm(lead);\n  if (value === 'facebook') return 'meta_form';\n  if (['excel', 'manual', 'call logs', 'ivr', 'google_sheets'].includes(value)) return 'Manual';\n  if (value === 'whatsapp cloud api' || value === 'whatsapp') return 'meta_ctwa';\n  if (value === 'website' || value === 'wesbite') return 'website';\n  return null;\n}\nfunction sourceFromTelecrmRow(raw) {\n  const row = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { source: raw };\n  const fromLead = sourceFromTeleLead(row.source);\n  if (fromLead) return fromLead;\n  const bucket = norm(firstDefined(row.value, row.tele_source, row.tele_source_value));\n  if (bucket === 'ctwa' || bucket === 'whatsapp cloud api' || bucket === 'whatsapp') return 'meta_ctwa';\n  if (bucket === 'meta lead form' || bucket === 'meta_form' || bucket === 'facebook') return 'meta_form';\n  if (bucket === 'website' || bucket === 'wesbite') return 'website';\n  return null;\n}\nfunction sourceFromAnalytics(doc) {\n  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;\n  const src = norm(firstDefined(doc.utm_source, doc.utmSource));\n  const med = norm(firstDefined(doc.utm_medium, doc.utmMedium));\n  const host = referrerHost(firstDefined(\n    doc.referrer, doc.web_referred, doc.web_referrer, doc.referred_by\n  ));\n  if (!src && !med && blank(doc.gclid) && !host) return null;\n  if (src === 'app' || src === 'stance_app' || src === 'healthflex_app') return 'app';\n  if (!blank(doc.gclid) || (src === 'google' && med === 'cpc')) return 'google_cpc';\n  if (src === 'gmb') return 'google_gmb';\n  if (src.includes('interakt')) return 'interakt';\n  if (med === 'wa' || med === 'tele_waca' || src === 'telecrm' || src === 'tele_waca') return 'Tele_WACA';\n  if (src.includes('chatgpt') || host.includes('chatgpt')) return 'chatgpt';\n  if (['ig', 'insta', 'instagram'].includes(src)) {\n    if (!med) return 'instagram_organic';\n    return med === 'paid_social' ? 'instagram_paid' : 'instagram_other';\n  }\n  if (src === 'meta' || src === 'facebook') {\n    return med === 'paid_social' ? 'meta_paid' : 'meta_other';\n  }\n  if (src === 'google' && !med) return 'google_organic';\n  if (!src && !med && host.includes('google')) return 'google_organic';\n  if (src === 'website' || src === 'wesbite') return 'website';\n  if (src || med || !blank(doc.gclid) || host) return 'others';\n  return null;\n}\nfunction storedSourceLabel(value) {\n  if (blank(value)) return null;\n  const aliases = {\n    dash_performance: 'dash_performance',\n    dash_customer: 'dash_customer',\n    dash_organic: 'dash_organic',\n    dash_advocate: 'dash_advocate',\n    dash_consultant: 'dash_consultant',\n    dash_doctor: 'dash_consultant',\n    meta_form: 'meta_form',\n    app: 'app',\n    manual: 'Manual',\n    meta_ctwa: 'meta_ctwa',\n    google_organic: 'google_organic',\n    google_cpc: 'google_cpc',\n    google_gmb: 'google_gmb',\n    interakt: 'interakt',\n    instagram_organic: 'instagram_organic',\n    instagram_paid: 'instagram_paid',\n    instagram_other: 'instagram_other',\n    chatgpt: 'chatgpt',\n    meta_paid: 'meta_paid',\n    meta_other: 'meta_other',\n    website: 'website',\n    website_organic: 'website_organic',\n    wesbite: 'website',\n    others: 'others',\n    tele_waca: 'Tele_WACA',\n    'whatsapp cloud api': 'meta_ctwa',\n    whatsapp: 'meta_ctwa',\n  };\n  return aliases[norm(value)] || String(value).trim();\n}\nconst SOURCE_EVENT_KEYS = [\n  'source', 'origin', 'occurred_at', 'tele_leadsource', 'tele_source',\n  'utm_source', 'utm_medium', 'utm_campaign',\n  'campaign_id', 'campaign_name', 'lead_id',\n  'ad_id', 'ad_name', 'ad_set_id', 'ad_set_name',\n  'ctwa_id', 'ctwa_source',\n];\nfunction sourceEvent(raw, defaults = {}) {\n  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};\n  const doc = { ...defaults, ...input };\n  const label = tidy(firstDefined(\n    doc.forced_source,\n    storedSourceLabel(typeof input.source === 'string' ? input.source : null)\n  ));\n  if (blank(label)) return { source: '' };\n  const entry = { source: label };\n  put(entry, 'origin', firstDefined(doc.origin, doc.platform));\n  const sourceOccurredMs = toMs(firstDefined(\n    doc.occurred_at, doc.dateISO, doc.date, doc.ts, doc.timestamp,\n    doc.created_at, doc.createdAt, doc.created_on, doc.first_seen_at\n  ));\n  if (sourceOccurredMs != null) entry.occurred_at = sourceOccurredMs;\n  put(entry, 'tele_leadsource', firstDefined(doc.tele_leadsource, leadSourceString(doc)));\n  put(entry, 'tele_source', firstDefined(doc.tele_source, doc.tele_source_value, doc.value));\n  put(entry, 'utm_source', firstDefined(doc.utm_source, doc.utmSource));\n  put(entry, 'utm_medium', firstDefined(doc.utm_medium, doc.utmMedium));\n  put(entry, 'utm_campaign', firstDefined(doc.utm_campaign, doc.utmCampaign));\n  put(entry, 'campaign_id', firstDefined(doc.campaign_id, doc.facebook_campaign_id, doc.telecrm_campaign_id));\n  put(entry, 'campaign_name', firstDefined(doc.campaign_name, doc.facebook_campaign, doc.telecrm_campaign, doc.campaign));\n  put(entry, 'lead_id', firstDefined(doc.lead_id, doc.external_lead_id, doc.facebook_lead_id));\n  put(entry, 'ad_id', firstDefined(doc.ad_id, doc.facebook_ad_id, doc.telecrm_ad_id));\n  put(entry, 'ad_name', firstDefined(doc.ad_name, doc.facebook_ad, doc.telecrm_ad, doc.ad, doc.content));\n  put(entry, 'ad_set_id', firstDefined(doc.ad_set_id, doc.facebook_ad_set_id, doc.telecrm_ad_set_id));\n  put(entry, 'ad_set_name', firstDefined(doc.ad_set_name, doc.facebook_ad_set_name, doc.telecrm_ad_set_name));\n  put(entry, 'ctwa_id', doc.ctwa_id);\n  put(entry, 'ctwa_source', firstDefined(doc.ctwa_source, doc.ctwa_source_id));\n  return entry;\n}\nfunction cleanSourceArray(raw) {\n  if (!Array.isArray(raw)) return [];\n  return raw.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))\n    .map((entry) => {\n      const normalized = sourceEvent(entry, {\n        origin: entry.origin || (entry.platform ? 'legacy_' + entry.platform : 'legacy'),\n        tele_source_value: entry.tele_source || entry.value,\n      });\n      return normalized;\n    })\n    .filter((entry) => !blank(entry.source));\n}\nfunction sourceHistory(existing) {\n  const current = cleanSourceArray(existing && existing.source);\n  const legacy = cleanSourceArray(existing && existing.final_source);\n  return current.length ? current : legacy;\n}\nfunction attributionFingerprint(entry) {\n  const identityKeys = SOURCE_EVENT_KEYS.filter((key) => key !== 'origin');\n  return JSON.stringify(identityKeys.map((key) => [key, norm(entry[key])]).filter((pair) => pair[1]));\n}\nfunction attributionSignal(doc) {\n  return [\n    doc.utm_source, doc.utmSource, doc.utm_medium, doc.utmMedium,\n    doc.utm_campaign, doc.utmCampaign, doc.referrer, doc.web_referred,\n    doc.web_referrer, doc.referred_by, doc.gclid,\n    doc.campaign_id, doc.campaign_name, doc.campaign,\n  ].some((value) => !blank(value));\n}\nfunction eventTime(entry) {\n  return toMs(entry && firstDefined(entry.occurred_at, entry.dateISO, entry.date, entry.ts, entry.timestamp));\n}\nfunction ensureLifo(arr) {\n  const out = Array.isArray(arr) ? arr.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry)) : [];\n  if (out.length < 2) return out.slice();\n  const firstMs = eventTime(out[0]);\n  const lastMs = eventTime(out[out.length - 1]);\n  if (firstMs != null && lastMs != null && firstMs < lastMs) return out.slice().reverse();\n  if (firstMs != null && lastMs == null) return out.slice().reverse();\n  return out.slice();\n}\nfunction sourceChannel(entry) {\n  const origin = norm(entry && entry.origin);\n  if (origin.includes('web')) return 'web';\n  return 'telecrm';\n}\nfunction sourceValueKey(entry) {\n  return [norm(entry && entry.source), sourceChannel(entry)].join('|');\n}\nfunction latestBy(arr, match) {\n  for (let i = 0; i < arr.length; i++) {\n    if (match(arr[i])) return arr[i];\n  }\n  return null;\n}\nfunction pickMarketingFields(doc) {\n  const out = {};\n  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return out;\n  put(out, 'campaign_id', firstDefined(doc.campaign_id, doc.facebook_campaign_id, doc.telecrm_campaign_id));\n  put(out, 'campaign_name', firstDefined(doc.campaign_name, doc.facebook_campaign, doc.telecrm_campaign, doc.campaign));\n  put(out, 'lead_id', firstDefined(doc.lead_id, doc.external_lead_id, doc.facebook_lead_id));\n  put(out, 'ad_id', firstDefined(doc.ad_id, doc.facebook_ad_id, doc.telecrm_ad_id));\n  put(out, 'ad_name', firstDefined(doc.ad_name, doc.facebook_ad, doc.telecrm_ad, doc.ad, doc.content));\n  put(out, 'ad_set_id', firstDefined(doc.ad_set_id, doc.facebook_ad_set_id, doc.telecrm_ad_set_id));\n  put(out, 'ad_set_name', firstDefined(doc.ad_set_name, doc.facebook_ad_set_name, doc.telecrm_ad_set_name));\n  put(out, 'ctwa_id', doc.ctwa_id);\n  put(out, 'ctwa_source', firstDefined(doc.ctwa_source, doc.ctwa_source_id));\n  return out;\n}\nfunction isTelecrmOrigin(entry) {\n  const origin = norm(entry && entry.origin);\n  return origin === 'telecrm'\n    || origin === 'telecrm_lead_source'\n    || origin === 'telecrm_source'\n    || origin === 'legacy_telecrm'\n    || origin === 'legacy';\n}\nfunction attributionIdsConflict(left, right) {\n  const keys = ['lead_id', 'campaign_id', 'campaign_name', 'ad_id', 'ad_set_id'];\n  for (const key of keys) {\n    const a = norm(left && left[key]);\n    const b = norm(right && right[key]);\n    if (a && b && a !== b) return true;\n  }\n  return false;\n}\nfunction sameTelecrmAttribution(left, right) {\n  if (!isTelecrmOrigin(left) || !isTelecrmOrigin(right)) return false;\n  if (blank(left && left.source) || norm(left.source) !== norm(right && right.source)) return false;\n  if (attributionIdsConflict(left, right)) return false;\n  const leftMs = toMs(left && left.occurred_at);\n  const rightMs = toMs(right && right.occurred_at);\n  if (leftMs != null && rightMs != null && leftMs !== rightMs) {\n    const pair = [norm(left.origin), norm(right.origin)].sort().join('|');\n    return pair === 'telecrm_lead_source|telecrm_source'\n      || pair === 'telecrm|telecrm_lead_source'\n      || pair === 'telecrm|telecrm_source';\n  }\n  return true;\n}\nfunction preferSourceOrigin(left, right) {\n  const rank = { telecrm_lead_source: 3, telecrm: 2, telecrm_source: 1 };\n  const leftRank = rank[left] || 0;\n  const rightRank = rank[right] || 0;\n  if (rightRank > leftRank) return right;\n  return left || right;\n}\nfunction mergeSourceEntries(left, right) {\n  const leftMs = toMs(left && left.occurred_at);\n  const rightMs = toMs(right && right.occurred_at);\n  let earliest = left && left.occurred_at;\n  if (leftMs == null) earliest = right && right.occurred_at;\n  else if (rightMs != null && rightMs < leftMs) earliest = right.occurred_at;\n  const merged = { source: (left && left.source) || (right && right.source) };\n  put(merged, 'origin', preferSourceOrigin(left && left.origin, right && right.origin));\n  const earliestMs = toMs(earliest); if (earliestMs != null) merged.occurred_at = earliestMs;\n  for (const key of SOURCE_EVENT_KEYS) {\n    if (key === 'source' || key === 'origin' || key === 'occurred_at') continue;\n    put(merged, key, firstDefined(left && left[key], right && right[key]));\n  }\n  return merged;\n}\nfunction coalesceTelecrmSourceEvents(entries) {\n  const output = [];\n  for (const entry of Array.isArray(entries) ? entries : []) {\n    const index = output.findIndex((existing) => sameTelecrmAttribution(existing, entry));\n    if (index >= 0) output[index] = mergeSourceEntries(output[index], entry);\n    else output.push(entry);\n  }\n  return output;\n}\nfunction facebookIntakeOccurredAt(telecrm) {\n  if (!telecrm || norm(leadSourceString(telecrm)) !== 'facebook') return null;\n  const leadRows = Array.isArray(telecrm.lead_source) ? telecrm.lead_source : [];\n  for (const row of leadRows) {\n    if (!row || typeof row === 'string') continue;\n    if (norm(row.source) !== 'facebook') continue;\n    const iso = toIso(firstDefined(row.occurred_at, row.dateISO, row.date));\n    if (iso) return iso;\n  }\n  const created = toIso(firstDefined(telecrm.created_at, telecrm.createdAt, telecrm.created_on));\n  if (created) return created;\n  const stages = Array.isArray(telecrm.stage) ? telecrm.stage : [];\n  let earliest = null;\n  let earliestMs = null;\n  for (const row of stages) {\n    const iso = toIso(firstDefined(row && row.occurred_at, row && row.dateISO, row && row.date));\n    const ms = toMs(iso);\n    if (ms == null) continue;\n    if (earliestMs == null || ms < earliestMs) {\n      earliestMs = ms;\n      earliest = iso;\n    }\n  }\n  return earliest;\n}\nfunction isFacebookSourceRow(raw, lead) {\n  const bucket = norm(firstDefined(raw && raw.value, raw && raw.tele_source, raw && raw.source));\n  return bucket === 'facebook'\n    || bucket === 'meta lead form'\n    || bucket === 'meta_form';\n}\nfunction prependSource(arr, entry) {\n  if (!entry || blank(entry.source)) return arr;\n  const latest = latestBy(arr, (row) => sourceChannel(row) === sourceChannel(entry));\n  if (latest && sourceValueKey(latest) === sourceValueKey(entry)) {\n    if (sameTelecrmAttribution(latest, entry)) {\n      const merged = mergeSourceEntries(latest, entry);\n      return arr.map((row) => (row === latest ? merged : row));\n    }\n    return arr;\n  }\n  return [entry, ...arr];\n}\nfunction currentTelecrmSource(telecrm) {\n  if (!telecrm) return null;\n  const latestLead = leadSourceString(telecrm);\n  if (blank(latestLead) && blank(teleSourceValue(telecrm)) && !attributionSignal(telecrm)) return null;\n  const sourceRows = Array.isArray(telecrm.source) ? telecrm.source : [];\n  const lastSource = sourceRows.length ? sourceRows[sourceRows.length - 1] : {};\n  const raw = lastSource && typeof lastSource === \"object\" && !Array.isArray(lastSource) ? lastSource : {};\n  const payload = { ...telecrm, ...raw };\n  if (isFacebookSourceRow(raw, latestLead)) {\n    const intakeAt = facebookIntakeOccurredAt(telecrm);\n    if (intakeAt) payload.occurred_at = intakeAt;\n  }\n  return sourceEvent(payload, {\n    origin: 'telecrm',\n    lead_source: latestLead,\n    tele_source_value: firstDefined(raw.value, raw.tele_source, teleSourceValue(telecrm)),\n  });\n}\nfunction currentWebSource(touchpoints, visitor) {\n  const webRows = (Array.isArray(touchpoints) ? touchpoints : [])\n    .filter((row) => row && typeof row === 'object' && attributionSignal(row));\n  if (webRows.length) {\n    const latest = webRows.reduce((best, row) => {\n      const bestMs = eventTime(best);\n      const rowMs = eventTime(row);\n      if (bestMs == null) return row;\n      if (rowMs == null) return best;\n      return rowMs >= bestMs ? row : best;\n    });\n    return sourceEvent(latest, { origin: 'web_touchpoint' });\n  }\n  if (visitor && attributionSignal(visitor)) {\n    return sourceEvent({\n      ...visitor,\n      utm_source: firstDefined(visitor.last_utm_source, visitor.first_utm_source, visitor.utm_source),\n      utm_medium: firstDefined(visitor.last_utm_medium, visitor.first_utm_medium, visitor.utm_medium),\n      utm_campaign: firstDefined(visitor.last_utm_campaign, visitor.first_utm_campaign, visitor.utm_campaign),\n      referrer: firstDefined(visitor.last_referrer, visitor.first_referrer, visitor.referrer),\n      occurred_at: firstDefined(visitor.last_seen_at, visitor.first_seen_at, visitor.createdAt),\n    }, { origin: 'web_visitor' });\n  }\n  return null;\n}\nfunction historyArray(value) {\n  if (Array.isArray(value)) return value.filter((row) => row != null && row !== '');\n  if (value && typeof value === 'object') {\n    const keys = Object.keys(value).filter((key) => /^\\d+$/.test(key)).sort((a, b) => Number(a) - Number(b));\n    if (keys.length) return keys.map((key) => value[key]);\n  }\n  if (value == null || value === '') return [];\n  return [value];\n}\nfunction buildSourceHistory(existing, telecrm, analytics = null, user = null) {\n  const ordered = [];\n  const seen = new Set();\n  let sequence = 0;\n  function add(entry) {\n    if (!entry || blank(entry.source)) return;\n    const fingerprint = attributionFingerprint(entry);\n    if (!fingerprint || seen.has(fingerprint)) return;\n    seen.add(fingerprint);\n    ordered.push({ entry, sequence: sequence++ });\n  }\n  for (const entry of sourceHistory(existing)) add(entry);\n\n  const categoryLabel = sourceFromCategory(user && user.category, analytics);\n  if (categoryLabel) {\n    add(sourceEvent({\n      forced_source: categoryLabel,\n      origin: 'dash_category',\n      tele_source: user && user.category,\n      occurred_at: user && firstDefined(user.createdAt, user.updatedAt),\n    }));\n  }\n\n  const leadRows = Array.isArray(telecrm && telecrm.lead_source)\n    ? telecrm.lead_source\n    : (!blank(telecrm && telecrm.lead_source) ? [telecrm.lead_source] : []);\n  const sourceRows = historyArray(telecrm && telecrm.source);\n  const latestLead = leadSourceString(telecrm || {});\n  const marketing = pickMarketingFields(telecrm || {});\n  const intakeAt = facebookIntakeOccurredAt(telecrm || {});\n\n  leadRows.forEach((row, index) => {\n    const raw = row && typeof row === 'object' ? row : { source: row };\n    const label = sourceFromTeleLead(raw.source);\n    if (!label) return;\n    const defaults = {\n      origin: 'telecrm_lead_source',\n      forced_source: label,\n      lead_source: raw.source,\n      created_at: telecrm && telecrm.created_at,\n      created_on: telecrm && telecrm.created_on,\n      createdAt: telecrm && telecrm.createdAt,\n    };\n    if (index === leadRows.length - 1) Object.assign(defaults, marketing, { lead_source: raw.source });\n    if (norm(raw.source) === 'facebook' && intakeAt) defaults.occurred_at = intakeAt;\n    add(sourceEvent(raw, defaults));\n  });\n  sourceRows.forEach((row, index) => {\n    const raw = row && typeof row === 'object' ? row : { value: row };\n    const label = sourceFromTelecrmRow(raw);\n    if (!label) return;\n    const defaults = {\n      origin: 'telecrm_source',\n      forced_source: label,\n      tele_leadsource: latestLead,\n      tele_source_value: firstDefined(raw.value, raw.tele_source, typeof raw.source === 'string' ? raw.source : null),\n    };\n    if (index === sourceRows.length - 1) {\n      Object.assign(defaults, marketing, {\n        tele_leadsource: latestLead,\n        tele_source_value: firstDefined(raw.value, raw.tele_source, typeof raw.source === 'string' ? raw.source : null),\n      });\n    }\n    if (isFacebookSourceRow(raw, latestLead) && intakeAt) defaults.occurred_at = intakeAt;\n    add(sourceEvent(raw, defaults));\n  });\n  if (!leadRows.length && !sourceRows.length && telecrm) {\n    const label = sourceFromTeleLead(latestLead) || sourceFromTelecrmRow(telecrm);\n    if (label) add(sourceEvent(telecrm, { origin: 'telecrm', forced_source: label }));\n  }\n\n  const analyticsDoc = analytics && typeof analytics === 'object' && !Array.isArray(analytics)\n    ? analytics\n    : null;\n  const analyticsLabel = sourceFromAnalytics(analyticsDoc);\n  if (analyticsLabel) {\n    add(sourceEvent({\n      ...analyticsDoc,\n      utm_source: firstDefined(analyticsDoc.utm_source, analyticsDoc.utmSource),\n      utm_medium: firstDefined(analyticsDoc.utm_medium, analyticsDoc.utmMedium),\n      utm_campaign: firstDefined(analyticsDoc.utm_campaign, analyticsDoc.utmCampaign),\n      referrer: firstDefined(analyticsDoc.referrer, analyticsDoc.web_referred, analyticsDoc.web_referrer),\n      occurred_at: firstDefined(analyticsDoc.firstTouchAt, analyticsDoc.lastTouchAt, analyticsDoc.occurred_at),\n    }, { origin: 'users_analytics_view', forced_source: analyticsLabel }));\n  }\n\n  const merged = coalesceTelecrmSourceEvents(ordered.map((item) => item.entry));\n  const sorted = merged\n    .map((entry, idx) => ({ entry, sequence: idx }))\n    .sort((left, right) => {\n      const leftMs = toMs(left.entry.occurred_at);\n      const rightMs = toMs(right.entry.occurred_at);\n      if (leftMs != null && rightMs != null && leftMs !== rightMs) return leftMs - rightMs;\n      if (leftMs != null && rightMs == null) return -1;\n      if (leftMs == null && rightMs != null) return 1;\n      return left.sequence - right.sequence;\n    }).map((item) => item.entry);\n  return sorted.map((entry) => {\n    const published = {};\n    for (const key of Object.keys(entry || {})) {\n      if (key === 'origin' || key === 'tele_source' || key === 'tele_leadsource') continue;\n      published[key] = entry[key];\n    }\n    return published;\n  });\n}\nfunction sameSourceArray(left, right) {\n  return JSON.stringify(Array.isArray(left) ? left : []) === JSON.stringify(Array.isArray(right) ? right : []);\n}\nfunction stageEntry(platform, status, occurredAt) {\n  if (blank(platform) || blank(status)) return null;\n  const entry = { platform: String(platform).trim(), status: String(status).trim() };\n  const occurredMs = toMs(occurredAt); if (occurredMs != null) entry.occurred_at = occurredMs;\n  return entry;\n}\nfunction cleanStage(raw) {\n  return historyArray(raw).map((entry) => {\n    if (typeof entry === 'string') return stageEntry('telecrm', entry, null);\n    return stageEntry(\n      (entry && entry.platform) || 'telecrm',\n      entry && firstDefined(entry.status, entry.value, entry.stage),\n      entry && firstDefined(entry.occurred_at, entry.dateISO, entry.date, entry.ts, entry.updatedAt, entry.createdAt)\n    );\n  }).filter(Boolean);\n}\nfunction prependStage(arr, entry) {\n  if (!entry) return arr;\n  const latest = latestBy(arr, (row) => norm(row.platform) === norm(entry.platform));\n  if (latest && norm(latest.status) === norm(entry.status)) {\n    if (!latest.occurred_at && entry.occurred_at) latest.occurred_at = entry.occurred_at;\n    return arr;\n  }\n  return [entry, ...arr];\n}\nfunction buildStageHistory(existing, telecrmRows, currentTelecrmStatus, dashStatus, dashOccurredAt, nowIso) {\n  const existingRows = cleanStage(existing && existing.stage);\n  const upstream = historyArray(telecrmRows);\n  const seen = new Set();\n  const output = [];\n  let sequence = 0;\n  function add(entry) {\n    if (!entry) return;\n    const statusKey = [norm(entry.platform), norm(entry.status)].join('|');\n    const timeKey = entry.occurred_at ? String(toMs(entry.occurred_at)) : '';\n    const exactKey = statusKey + '|' + timeKey;\n    if (seen.has(exactKey)) return;\n    if (timeKey) {\n      const datelessIndex = output.findIndex((item) => (\n        norm(item.entry.platform) === norm(entry.platform)\n        && norm(item.entry.status) === norm(entry.status)\n        && !item.entry.occurred_at\n      ));\n      if (datelessIndex >= 0) {\n        output[datelessIndex].entry.occurred_at = entry.occurred_at;\n        seen.delete(statusKey + '|');\n        seen.add(exactKey);\n        return;\n      }\n    } else if (output.some((item) => (\n      norm(item.entry.platform) === norm(entry.platform)\n      && norm(item.entry.status) === norm(entry.status)\n    ))) {\n      return;\n    }\n    seen.add(exactKey);\n    output.push({ entry, sequence: sequence++ });\n  }\n  for (const entry of existingRows) add(entry);\n  const hasDashRow = existingRows.some((entry) => norm(entry.platform) === 'dash');\n  if (!hasDashRow && existing && !blank(existing.dash_status)) {\n    add(stageEntry(\n      'dash',\n      existing.dash_status,\n      firstDefined(existing.modified_at, existing.updated_at, existing.updatedAt)\n    ));\n  }\n  for (const row of upstream) {\n    if (typeof row === 'string') add(stageEntry('telecrm', row, null));\n    else if (row && typeof row === 'object') {\n      add(stageEntry(\n        'telecrm',\n        firstDefined(row.status, row.value, row.stage),\n        firstDefined(row.occurred_at, row.dateISO, row.date, row.ts, row.updatedAt, row.createdAt)\n      ));\n    }\n  }\n  const latestFor = (platform) => {\n    let best = null;\n    for (let i = 0; i < output.length; i++) {\n      const item = output[i];\n      if (norm(item.entry.platform) !== norm(platform)) continue;\n      if (!best) {\n        best = item;\n        continue;\n      }\n      const ms = toMs(item.entry.occurred_at);\n      const bestMs = toMs(best.entry.occurred_at);\n      if (ms != null && (bestMs == null || ms > bestMs)) best = item;\n      else if ((ms == null && bestMs == null) || (ms != null && bestMs != null && ms === bestMs)) {\n        if (item.sequence > best.sequence) best = item;\n      }\n    }\n    return best ? best.entry : null;\n  };\n  function uniqueDashOccurredAt(latestDash, status, preferred) {\n    const preferredMs = toMs(preferred);\n    const latestMs = toMs(latestDash && latestDash.occurred_at);\n    let iso = null;\n    if (preferredMs != null && (latestMs == null || preferredMs > latestMs)) {\n      iso = toIso(preferred);\n    }\n    if (!iso) iso = toIso(nowIso) || new Date().toISOString();\n    const statusKey = ['dash', norm(status)].join('|');\n    while (seen.has(statusKey + '|' + String(toMs(iso) || ''))) {\n      const ms = toMs(iso);\n      iso = new Date((ms == null ? Date.now() : ms) + 1).toISOString();\n    }\n    return iso;\n  }\n  const latestTelecrm = latestFor('telecrm');\n  if (!blank(currentTelecrmStatus) && (!latestTelecrm || norm(latestTelecrm.status) !== norm(currentTelecrmStatus))) {\n    add(stageEntry('telecrm', currentTelecrmStatus, null));\n  }\n  const latestDash = latestFor('dash');\n  if (!blank(dashStatus)) {\n    const dashStatusValue = String(dashStatus).trim();\n    if (!latestDash || norm(latestDash.status) !== norm(dashStatusValue)) {\n      add(stageEntry('dash', dashStatus, uniqueDashOccurredAt(latestDash, dashStatusValue, dashOccurredAt)));\n    } else if (!latestDash.occurred_at && dashOccurredAt) {\n      const iso = toIso(dashOccurredAt);\n      const backfillMs = toMs(iso); if (backfillMs != null) latestDash.occurred_at = backfillMs;\n    }\n  }\n  return output.sort((left, right) => {\n    const leftMs = toMs(left.entry.occurred_at);\n    const rightMs = toMs(right.entry.occurred_at);\n    if (leftMs != null && rightMs != null && leftMs !== rightMs) return rightMs - leftMs;\n    if (leftMs != null && rightMs == null) return -1;\n    if (leftMs == null && rightMs != null) return 1;\n    return right.sequence - left.sequence;\n  }).map((item) => item.entry);\n}\nfunction appointmentView(appointment) {\n  return {\n    visitType: appointment.visitType || 'FIRST_VISIT',\n    createdAt: toIso(appointment.createdAt),\n    updatedAt: toIso(appointment.updatedAt),\n    report: appointment.report ?? null,\n  };\n}\n\nfunction digits(raw) {\n  let s = String(raw == null ? '' : raw).trim().replace(/[^0-9]/g, '');\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  return s;\n}\nfunction itemPhone(json) {\n  if (!json || typeof json !== 'object') return '';\n  const direct = digits(json.phone10 || json.phone);\n  if (direct) return direct;\n  const row = Array.isArray(json.data) ? json.data[0] : null;\n  const fields = row && (row.fields || row);\n  return digits(fields && fields.phone);\n}\nfunction nodeJson(name, phoneHint) {\n  const items = $(name).all();\n  if (!items.length) return {};\n  if (items.length === 1) return items[0].json || {};\n  const phone = digits(phoneHint || ($json && ($json.phone10 || $json.phone)));\n  if (!phone) return {};\n  const hit = items.find((item) => itemPhone(item.json) === phone);\n  return hit ? hit.json : {};\n}\nfunction pickPhone10() {\n  const current = digits($json && ($json.phone10 || $json.phone));\n  if (current.length === 10) return current;\n  for (const name of ['Find User', 'Load Existing Doc', 'Find TeleCRM Mirror History', 'Normalize Phone']) {\n    const items = $(name).all();\n    if (items.length !== 1) continue;\n    const found = itemPhone(items[0].json);\n    if (found.length === 10) return found;\n  }\n  return current;\n}\nfunction telecrmResponse(phone10) {\n  const items = $('TeleCRM Search').all();\n  if (!items.length) return {};\n  if (items.length === 1) return items[0].json || {};\n  if (!phone10) return {};\n  const hit = items.find((item) => itemPhone(item.json) === phone10);\n  return hit ? hit.json : {};\n}\n\nfunction resolveJoinDoc(nodeName, phoneHint) {\n  const want = String(phoneHint == null ? '' : phoneHint).replace(/[^0-9]/g, '');\n  const want10 = (want.length === 12 && want.startsWith('91')) ? want.slice(2)\n    : ((want.length === 11 && want.startsWith('0')) ? want.slice(1) : want);\n  const items = $(nodeName).all().map((item) => item.json || {});\n  for (const doc of items) {\n    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) continue;\n    const phone = String(doc.phone == null ? '' : doc.phone).replace(/[^0-9]/g, '');\n    const phone10 = (phone.length === 12 && phone.startsWith('91')) ? phone.slice(2)\n      : ((phone.length === 11 && phone.startsWith('0')) ? phone.slice(1) : phone);\n    if (want10 && phone10 === want10) return doc;\n  }\n  for (const doc of items) {\n    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) continue;\n    if (Array.isArray(doc.stage) || Array.isArray(doc.source) || doc.dash_status != null || doc.conversionStatus != null) {\n      return doc;\n    }\n  }\n  return {};\n}\nconst phone = pickPhone10();\nconst response = telecrmResponse(phone);\nconst lead = (Array.isArray(response.data) ? response.data : [])[0] || {};\nconst apiFields = flattenLeadActivity(lead && typeof lead === 'object' && !Array.isArray(lead) ? lead : {});\nconst mirrorItem = nodeJson('Find TeleCRM Mirror History');\nconst mirror = mirrorItem && (mirrorItem.phone || mirrorItem.lead_source || mirrorItem.source || mirrorItem.stage) ? mirrorItem : {};\nconst mirrorFields = mirror.fields && typeof mirror.fields === 'object' ? mirror.fields : {};\nconst f = { ...mirror, ...mirrorFields, ...apiFields };\nconst mirrorLead = historyArray(mirror.lead_source);\nconst mirrorSourceRows = historyArray(mirror.source);\nconst mirrorStageRows = historyArray(mirror.stage);\nif (mirrorLead.length) f.lead_source = Array.isArray(mirror.lead_source) || (mirror.lead_source && typeof mirror.lead_source === 'object') ? mirrorLead : mirror.lead_source;\nif (mirrorSourceRows.length) f.source = mirrorSourceRows;\nif (mirrorStageRows.length) f.stage = mirrorStageRows;\nconst existing = resolveJoinDoc('Load Existing Doc', phone);\nconst userItem = nodeJson('Find User');\nconst user = userItem && userItem._id ? userItem : null;\nconst pd = user && user.profileData ? user.profileData : {};\nfunction collectRows(name, arrayKey, keep) {\n  const paired = nodeJson(name);\n  if (Array.isArray(paired[arrayKey])) return paired[arrayKey].filter(keep);\n  return $(name).all().map((item) => item.json).filter(keep);\n}\nconst appointmentItems = collectRows('Aggregate Appointments', 'appointments', (item) => item && item.visitType);\nconst visitorItem = nodeJson('Find Web Visitor', phone);\nconst nestedVisitor = visitorItem && visitorItem.visitor;\nconst visitor = (nestedVisitor && nestedVisitor._id) ? nestedVisitor : (visitorItem && visitorItem._id ? visitorItem : null);\nconst touchpoints = collectRows('Find Touchpoints', 'touchpoints', (item) => item && item._id);\nconst firstTP = touchpoints[0] || null;\n\nconst status = firstDefined(lead.status, apiFields.status, mirror.status, f.status);\nconst convertedStatuses = new Set(['PAID', 'INVOICE_GENERATED', 'VISITED']);\nconst visited = appointmentItems.some((appointment) => convertedStatuses.has(appointment.status));\nconst center = Array.isArray(pd.centers) ? pd.centers[0] : pd.centers;\nconst createdRaw = firstDefined(f.created_on, f.created_at, lead.createdAt);\nconst modifiedRaw = firstDefined(f.modified_on, f.modified_at, lead.modifiedAt, Date.now());\n\nconst stage = buildStageHistory(existing, f.stage, status, pd.status, user && user.updatedAt, new Date().toISOString());\n\nconst analyticsItem = nodeJson('Find Analytics View', phone);\n  const analytics = analyticsItem && analyticsItem.profileData && analyticsItem.profileData.webAnalytics\n    ? analyticsItem.profileData.webAnalytics\n    : (analyticsItem && analyticsItem.webAnalytics ? analyticsItem.webAnalytics : null);\n  const source = buildSourceHistory(existing, f, analytics, { category: pd.category, createdAt: user && user.createdAt, updatedAt: user && user.updatedAt });\n\nreturn [{ json: omitEmpty({\n  phone,\n  name: f.name || null,\n  conversionStatus: status,\n  dash_status: pd.status || null,\n  dash_patient_id: user ? String(user._id) : null,\n  dash_firstName: pd.firstName || null,\n  dash_lastName: pd.lastName || null,\n  dash_email: user ? user.email || null : null,\n  dash_gender: pd.gender || null,\n  dash_dob: pd.dob ?? null,\n  dash_patientType: pd.patientType || null,\n  dash_consultant: pd.consultant ? String(pd.consultant) : null,\n  dash_centers_id: center ? String(center) : null,\n  dash_firstvisitapppointment: appointmentItems.length ? (visited ? 'visited' : 'not_visited') : null,\n  telecrm_form_branch: f.branch || null,\n  telecrm_form_city: f.city || null,\n  telecrm_form_postcode: f.post_code || null,\n  telecrm_form_health_concern: f.health_concern ?? null,\n  'telecrm_#ofCalls': pickActivityCount(f, existing['telecrm_#ofCalls'], ['Calls Count', '# Calls Count', '#ofCalls', 'calls_count', 'callsCount', 'telecrm_#ofCalls']),\n  'telecrm_#ofmessages': pickActivityCount(f, existing['telecrm_#ofmessages'], ['Messages sent lead', '# Messages sent lead', 'Messages Count', '# Messages Count', '#ofmessages', 'messages_count', 'messagesCount', 'Messages sent', 'telecrm_#ofmessages']),\n  telecrm_connected_calls: pickActivityCount(f, existing.telecrm_connected_calls, ['Count of Connected Calls', 'Connected Call Count', '# Connected Call Count', 'connected_call_count', 'connectedCallCount']),\n  telecrm_first_interaction_date: toMs(firstDefined(f.first_interaction_date, f['Captured On'], existing.telecrm_first_interaction_date)),\n  telecrm_first_call_done: firstCallDone(f, existing),\n  telecrm_last_contacted_date: toIso(firstDefined(f.last_contacted_date, f['Last Call'], f['Last Activity On'], f['Last Incoming Activity On'], f['Last Incoming whatsapp message date'], existing.telecrm_last_contacted_date)),\n  telecrm_drop_off_reason: firstDefined(f.drop_off_reason, f['drop-off_reason_1'], existing.telecrm_drop_off_reason) || null,\n  telecrm_capture_frequency: tidyNumber(firstDefined(f.capture_frequency, f['Capture Frequency'], f['# Capture Frequency'], existing.telecrm_capture_frequency)),\n  source,\n  stage,\n  created_on: toIso(createdRaw),\n  created_at: toMs(createdRaw),\n  modified_at: toMs(modifiedRaw),\n  last_synced_at: Date.now(),\n  temperature: firstDefined(existing.temperature, existing.lead_temperature) ?? null,\n  calculated_at: firstDefined(existing.calculated_at, existing.temperature_calculated_at) ?? null,\n  temperature_derived: existing.temperature_derived == null ? null : normalizeTemperatureDerived(existing.temperature_derived),\n}) }];"
+      }
+    },
+    {
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "Upsert Document",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        2880,
+        300
+      ],
+      "parameters": {
+        "operation": "update",
+        "collection": "new-telecrm",
+        "updateKey": "phone",
+        "fields": "name,conversionStatus,dash_status,dash_patient_id,dash_firstName,dash_lastName,dash_email,dash_gender,dash_dob,dash_patientType,dash_consultant,dash_centers_id,dash_firstvisitapppointment,telecrm_form_branch,telecrm_form_city,telecrm_form_postcode,telecrm_form_health_concern,telecrm_#ofCalls,telecrm_#ofmessages,telecrm_connected_calls,telecrm_first_interaction_date,telecrm_first_call_done,telecrm_last_contacted_date,telecrm_drop_off_reason,telecrm_capture_frequency,source,stage,created_on,created_at,modified_at,last_synced_at,temperature,calculated_at,temperature_derived",
+        "upsert": true
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      }
+    },
+    {
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1480,
+        80
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, phone: $('Finalize Recapture Decision').first().json.phone, conversionStatus: $('Finalize Recapture Decision').first().json.conversionStatus, lead_recapture: !!$('Finalize Recapture Decision').first().json.lead_recapture }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "new-telecrm",
+        "query": "={{ (() => { const phone = $json && $json.phone ? $json.phone : (($('Finalize Recapture Decision').all()[0] || $('Build Document').all()[0] || { json: {} }).json.phone); return JSON.stringify([{ '$match': { phone } }, { '$set': { temperature: { '$cond': [{ '$in': [{ '$type': '$temperature' }, ['missing', 'null']] }, '$$REMOVE', '$temperature'] }, calculated_at: { '$cond': [{ '$in': [{ '$type': '$calculated_at' }, ['missing', 'null']] }, '$$REMOVE', '$calculated_at'] }, temperature_derived: { '$cond': [{ '$eq': [{ '$type': '$temperature_derived' }, 'object'] }, { attempts: { '$ifNull': ['$temperature_derived.attempts', 0] }, connected: { '$ifNull': ['$temperature_derived.connected', 0] }, d_captured: { '$ifNull': ['$temperature_derived.d_captured', '$temperature_derived.d_status'] }, d_inbound: '$temperature_derived.d_inbound', d_call: '$temperature_derived.d_call' }, '$$REMOVE'] } } }, { '$unset': ['temperature_outcome', 'temperature_rule', 'dash_firstVisitAppointments', 'lead_temperature', 'temperature_calculated_at'] }, { '$replaceRoot': { newRoot: { '$arrayToObject': { '$filter': { input: { '$objectToArray': '$$ROOT' }, as: 'field', cond: { '$and': [ { '$ne': ['$$field.v', null] }, { '$ne': ['$$field.v', ''] }, { '$or': [ { '$in': ['$$field.k', ['_id','phone','conversionStatus','source','stage','created_on','created_at','modified_at','last_synced_at']] }, { '$ne': ['$$field.v', []] } ] } ] } } } } } }, { '$merge': { into: 'new-telecrm', on: '_id', whenMatched: 'replace', whenNotMatched: 'discard' } }]); })() }}"
+      },
+      "id": "remove-root-ctwa-sync",
+      "name": "Remove Legacy Root CTWA",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [
+        3320,
+        300
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "notes": "Enforces the canonical new-telecrm allowlist and removes all legacy fields, including final_source.",
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "find-telecrm-mirror-history-history",
+      "name": "Find TeleCRM Mirror History",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        1780,
+        300
+      ],
+      "parameters": {
+        "operation": "findOne",
+        "collection": "telecrm",
+        "query": "={{ (() => { const p = String(($('Normalize Phone').first().json || {}).phone10 || '').replace(/[^0-9]/g, ''); const s = (p.length === 12 && p.startsWith('91')) ? p.slice(2) : ((p.length === 11 && p.startsWith('0')) ? p.slice(1) : p); if (s.length !== 10) return JSON.stringify({ _id: null }); return JSON.stringify({ '$or': [{ phone: { '$in': [s, '91' + s, '0' + s] } }, { phone: Number(s) }] }); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "analytics-view-0000-0000-0000-000000000001",
+      "name": "Find Analytics View",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        2440,
+        520
+      ],
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "users_analytics_view",
+        "query": "={{ (() => { const p = String(($('Normalize Phone').first().json || {}).phone10 || '').replace(/[^0-9]/g, ''); if (p.length !== 10) return JSON.stringify([{ '$match': { _id: null } }]); return JSON.stringify([{ '$set': { '__phoneDigits': { '$replaceAll': { input: { '$replaceAll': { input: { '$replaceAll': { input: { '$replaceAll': { input: { '$replaceAll': { input: { '$toString': { '$ifNull': ['$phone', ''] } }, find: ' ', replacement: '' } }, find: '-', replacement: '' } }, find: '+', replacement: '' } }, find: '(', replacement: '' } }, find: ')', replacement: '' } } } }, { '$set': { '__phone10': { '$switch': { branches: [{ case: { '$and': [{ '$eq': [{ '$strLenCP': '$__phoneDigits' }, 12] }, { '$eq': [{ '$substrCP': ['$__phoneDigits', 0, 2] }, '91'] }] }, then: { '$substrCP': ['$__phoneDigits', 2, 10] } }, { case: { '$and': [{ '$eq': [{ '$strLenCP': '$__phoneDigits' }, 11] }, { '$eq': [{ '$substrCP': ['$__phoneDigits', 0, 1] }, '0'] }] }, then: { '$substrCP': ['$__phoneDigits', 1, 10] } }], default: '$__phoneDigits' } } } }, { '$match': { '__phone10': p } }, { '$sort': { updatedAt: -1 } }, { '$limit': 1 }, { '$unset': ['__phoneDigits', '__phone10'] }]); })() }}"
+      },
+      "credentials": {
+        "mongoDb": {
+          "id": "REPLACE_WITH_MONGO_CRED_ID",
+          "name": "MongoDB"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "sync-finalize-recapture-0001",
+      "name": "Finalize Recapture Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2770,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const doc = { ...($input.first().json || {}) };\nconst normalize = (value) => String(value == null ? '' : value).trim().toLowerCase();\nconst upper = (value) => String(value == null ? '' : value).trim().toUpperCase();\n\nfunction firstDefined(...vals) {\n  for (const v of vals) {\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return null;\n}\n\nfunction canonicalTelecrmStatus(raw) {\n  const key = normalize(raw);\n  const map = {\n    fresh: 'Fresh',\n    'no response': 'No Response',\n    'in pipeline': 'In Pipeline',\n    'not shown up': 'Not Shown Up',\n    'not converted': 'Not Converted',\n    'session booked': 'Session booked',\n    'session rescheduled': 'Session Rescheduled',\n    converted: 'Converted',\n  };\n  return map[key] || null;\n}\n\nfunction previousTelecrmStatuses(stages) {\n  const out = [];\n  for (const row of Array.isArray(stages) ? stages : []) {\n    if (normalize(row && row.platform) !== 'telecrm') continue;\n    const mapped = canonicalTelecrmStatus(row.status);\n    if (mapped) out.push(mapped);\n  }\n  return out;\n}\n\nfunction inboundCaptureSignal(sources) {\n  const rows = Array.isArray(sources) ? sources : [];\n  for (const row of rows) {\n    const label = normalize(row && row.source);\n    if (!label || label === 'lead_recapture') continue;\n    if (label.startsWith('dash_')) continue;\n    // Website / paid / CRM intake styles that indicate a capture event.\n    if (\n      label === 'website'\n      || label === 'wesbite'\n      || label === 'performance'\n      || label === 'meta_form'\n      || label === 'meta_ctwa'\n      || label === 'meta_paid'\n      || label === 'meta_other'\n      || label === 'google_cpc'\n      || label === 'google_organic'\n      || label === 'manual'\n      || label === 'others'\n      || label === 'tele_waca'\n      || label === 'interakt'\n      || label === 'app'\n      || label === 'chatgpt'\n      || label.includes('instagram')\n    ) {\n      return true;\n    }\n  }\n  return false;\n}\n\nfunction tagLeadRecapture(sources, occurredAt) {\n  const rows = Array.isArray(sources) ? sources.slice() : [];\n  if (rows.some((row) => normalize(row && row.source) === 'lead_recapture')) return rows;\n  rows.push({ source: 'lead_recapture', occurred_at: occurredAt });\n  return rows;\n}\n\nfunction readCurrentTelecrmStatus() {\n  try {\n    const mirror = $('Find TeleCRM Mirror').first().json || {};\n    const mirrorFields = mirror.fields && typeof mirror.fields === 'object' ? mirror.fields : {};\n    const hit = firstDefined(mirror.status, mirrorFields.status, doc.telecrm_previous_status);\n    if (hit) return hit;\n  } catch (_) {}\n  try {\n    const mirror = $('Find TeleCRM Mirror History').first().json || {};\n    const mirrorFields = mirror.fields && typeof mirror.fields === 'object' ? mirror.fields : {};\n    const hit = firstDefined(mirror.status, mirrorFields.status, doc.telecrm_previous_status);\n    if (hit) return hit;\n  } catch (_) {}\n  try {\n    const response = $('TeleCRM Search').first().json || {};\n    const lead = (Array.isArray(response.data) ? response.data : [])[0] || {};\n    const fields = lead.fields && typeof lead.fields === 'object' ? lead.fields : {};\n    return firstDefined(lead.status, fields.status, doc.conversionStatus);\n  } catch (_) {\n    return doc.conversionStatus || null;\n  }\n}\n\nconst currentTelecrmStatus = readCurrentTelecrmStatus();\nconst dashStatus = upper(doc.dash_status);\nconst convertedDashStatuses = new Set(['ACTIVE', 'PACKAGE', 'PACKAGE_EXPIRED', 'DISCHARGED', 'INACTIVE']);\nconst bookedDashStatuses = new Set(['BOOKED', 'BOOKED_WITH_TOKEN', 'BOOKED_WITHOUT_TOKEN']);\nconst leadStatuses = {\n  fresh: 'Fresh',\n  'no response': 'No Response',\n  'in pipeline': 'In Pipeline',\n  'not shown up': 'Not Shown Up',\n  'not converted': 'Not Converted',\n};\n\n// Normal dash \u2192 TeleCRM mapping (not recapture heal).\nlet desiredTelecrmStatus = canonicalTelecrmStatus(doc.conversionStatus) || canonicalTelecrmStatus(currentTelecrmStatus);\nif (convertedDashStatuses.has(dashStatus)) {\n  desiredTelecrmStatus = 'Converted';\n} else if (bookedDashStatuses.has(dashStatus)) {\n  desiredTelecrmStatus = normalize(currentTelecrmStatus) === 'session rescheduled'\n    ? 'Session Rescheduled'\n    : 'Session booked';\n} else if (dashStatus === 'LEAD') {\n  let previousDash = '';\n  try {\n    previousDash = upper((($('Load Existing Doc').first().json) || {}).dash_status);\n  } catch (_) {}\n  if (bookedDashStatuses.has(previousDash)) {\n    desiredTelecrmStatus = 'In Pipeline';\n  } else {\n    desiredTelecrmStatus = leadStatuses[normalize(currentTelecrmStatus)] || 'Fresh';\n  }\n}\n\n// Lead recapture: a known lead captured again. Only a capture event may reopen a stage \u2014\n// source[] keeps website forever, so it cannot gate the push or every sync would re-push Fresh.\nconst priorTelecrm = previousTelecrmStatuses(doc.stage);\nconst hadPriorLeadHistory = priorTelecrm.length > 0;\nconst reopenedFresh = normalize(currentTelecrmStatus) === 'fresh' && priorTelecrm.some((s) => s !== 'Fresh');\nconst inbound = inboundCaptureSignal(doc.source);\nconst countOrNaN = (value) => (value === null || value === undefined || value === '' ? NaN : Number(value));\nlet previousCaptureCount = NaN;\ntry {\n  previousCaptureCount = countOrNaN((($('Load Existing Doc').first().json) || {}).telecrm_capture_frequency);\n} catch (_) {}\nconst captureCount = countOrNaN(doc.telecrm_capture_frequency);\n// Both counts must be known. A missing stored count is a first sighting, not a new capture.\nconst capturedAgain = Number.isFinite(captureCount)\n  && Number.isFinite(previousCaptureCount)\n  && captureCount > previousCaptureCount;\nconst recaptureEvent = capturedAgain || reopenedFresh;\nconst leadRecapture = hadPriorLeadHistory && (recaptureEvent || (dashStatus === 'LEAD' && inbound));\n\n// Converted is the one stage recapture must not reopen. The last clause catches TeleCRM's own\n// Lead Recapture (token set to Once a Day) resetting a Converted lead to Fresh.\nconst paidVisit = normalize(doc.dash_firstvisitapppointment) === 'visited';\nconst convertedFamily = normalize(currentTelecrmStatus) === 'converted'\n  || convertedDashStatuses.has(dashStatus)\n  || paidVisit\n  || (reopenedFresh && priorTelecrm.includes('Converted'));\n\nconst nowIso = new Date().toISOString();\nif (leadRecapture) doc.source = tagLeadRecapture(doc.source, nowIso);\nif (convertedFamily) {\n  desiredTelecrmStatus = 'Converted';\n} else if (leadRecapture && recaptureEvent) {\n  desiredTelecrmStatus = 'Fresh';\n}\n\ndoc.conversionStatus = desiredTelecrmStatus;\ndoc.telecrm_previous_status = currentTelecrmStatus;\ndoc.lead_recapture = leadRecapture;\ndoc.recapture_heal_reason = convertedFamily && normalize(currentTelecrmStatus) !== 'converted'\n  ? 'converted_recapture_heal'\n  : (leadRecapture ? 'lead_recapture' : null);\n\n// Update an existing TeleCRM lead only. A 91-prefix on a 10-digit lead creates a second card.\nfunction mirrorUpdatePhone(raw) {\n  let s = String(raw == null ? '' : raw).replace(/[^0-9]/g, '');\n  if (s.length === 12 && s.startsWith('91')) s = s.slice(2);\n  if (s.length === 11 && s.startsWith('0')) s = s.slice(1);\n  return s.length === 10 ? s : '';\n}\nlet mirrorPhone = '';\ntry {\n  const mirror = $('Find TeleCRM Mirror History').first().json || {};\n  mirrorPhone = mirrorUpdatePhone(mirror.phone);\n} catch (_) {}\ndoc.telecrm_push_phone = mirrorPhone || null;\n\n// Sync only pushes a recapture decision: hold Converted, or set Fresh on a real capture event.\n// It never pushes the plain dash \u2192 TeleCRM mapping; WF3 owns that.\nconst allowPush = doc.allow_status_push !== false;\nconst recaptureStatusPush = recaptureEvent && (convertedFamily || leadRecapture);\ndoc.should_push_telecrm = allowPush\n  && Boolean(desiredTelecrmStatus)\n  && Boolean(mirrorPhone)\n  && recaptureStatusPush\n  && normalize(currentTelecrmStatus) !== normalize(desiredTelecrmStatus);\n\nif (doc.should_push_telecrm && desiredTelecrmStatus) {\n  const stages = Array.isArray(doc.stage) ? doc.stage.slice() : [];\n  const latestTele = stages.find((row) => normalize(row && row.platform) === 'telecrm');\n  if (!latestTele || normalize(latestTele.status) !== normalize(desiredTelecrmStatus)) {\n    stages.unshift({ platform: 'telecrm', status: desiredTelecrmStatus, occurred_at: nowIso });\n    doc.stage = stages;\n  }\n  doc.modified_at = nowIso;\n} else if (leadRecapture) {\n  doc.modified_at = nowIso;\n}\n\nreturn [{ json: doc }];\n"
+      },
+      "notes": "Holds Converted on recapture; sets Fresh only on a real capture event."
+    },
+    {
+      "id": "sync-recapture-push-gate",
+      "name": "TeleCRM Status Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3320,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "sync-should-push-status",
+              "leftValue": "={{ $('Finalize Recapture Decision').first().json.should_push_telecrm }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "sync-recapture-push",
+      "name": "Push Recapture Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3540,
+        460
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://next-api.telecrm.in/enterprise/69da237dbbfc0db1fc1ea6e2/autoupdatelead",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => { const d = $('Finalize Recapture Decision').first().json || {}; return JSON.stringify({ fields: { phone: d.telecrm_push_phone, status: d.conversionStatus } }); })() }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_TELECRM_ASYNC_CRED_ID",
+          "name": "TeleCRM Async Token"
+        }
+      },
+      "notes": "UPDATE branch only: status heal/recapture on an existing lead. Never creates.",
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Phone": {
+      "main": [
+        [
+          {
+            "node": "TeleCRM Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TeleCRM Search": {
+      "main": [
+        [
+          {
+            "node": "IF Lead Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Lead Found": {
+      "main": [
+        [
+          {
+            "node": "Load Existing Doc",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Doc": {
+      "main": [
+        [
+          {
+            "node": "Find TeleCRM Mirror History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find User": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Appointments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Appointments": {
+      "main": [
+        [
+          {
+            "node": "Find Web Visitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Web Visitor": {
+      "main": [
+        [
+          {
+            "node": "Find Touchpoints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Document": {
+      "main": [
+        [
+          {
+            "node": "Finalize Recapture Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Document": {
+      "main": [
+        [
+          {
+            "node": "Remove Legacy Root CTWA",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "TeleCRM Status Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Touchpoints": {
+      "main": [
+        [
+          {
+            "node": "Find Analytics View",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find TeleCRM Mirror History": {
+      "main": [
+        [
+          {
+            "node": "Find User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove Legacy Root CTWA": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Analytics View": {
+      "main": [
+        [
+          {
+            "node": "Build Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Recapture Decision": {
+      "main": [
+        [
+          {
+            "node": "Upsert Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TeleCRM Status Changed?": {
+      "main": [
+        [
+          {
+            "node": "Push Recapture Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
