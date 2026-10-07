@@ -9,9 +9,10 @@
  * 9738977035). This job finds those and re-pushes the correct stage using the
  * SAME endpoint + mapping the workflow uses.
  *
- * Mapping (identical to Map Status in the workflow):
- *   first-visit PAID / INVOICE_GENERATED / VISITED  → Converted
- *   first-visit BOOKED                              → Session booked
+ * Mapping:
+ *   first-visit VISITED  → Converted
+ *   first-visit BOOKED   → Session booked
+ *   PAID / INVOICE_GENERATED do not convert; payment is not a visit.
  *
  * Conservative by design: it only touches leads whose TeleCRM status is still
  * "Fresh" (the clear "never advanced" signature) — it never overrides a
@@ -36,8 +37,8 @@ const WRITE_TOKEN = process.env.TELECRM_AUTOUPDATE_TOKEN || process.env.TELECRM_
 const AUTOUPDATE_URL = `https://next-api.telecrm.in/enterprise/${EID}/autoupdatelead`;
 const RATE_LIMIT_MS = 350; // be gentle with the TeleCRM API
 
-const CONVERTED_APPT = new Set(['PAID', 'INVOICE_GENERATED', 'VISITED']);
-const ACTIVE_APPT = ['BOOKED', 'PAID', 'VISITED', 'INVOICE_GENERATED'];
+const CONVERTED_APPT = new Set(['VISITED']);
+const ACTIVE_APPT = ['BOOKED', 'VISITED'];
 const STUCK_STATUS = 'Fresh'; // only reconcile leads still at the initial state
 
 // ── args ──────────────────────────────────────────────────────────────────────

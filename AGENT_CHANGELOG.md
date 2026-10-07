@@ -4303,3 +4303,969 @@ A cancelled booking was staying Session booked or falling through to Fresh. Sale
 - Priya Mahadevan 9845512914 is already In Pipeline on the mirror. Her open card showed Session booked
 - so a mirror backfill will not change that screen.
 
+
+## 2026-10-01 — Store one capture source and stop Mongo lead_recapture
+
+**Agent:** AI coding agent
+
+### Objective
+Keep a single capture-time source on the join document, and stop writing lead_recapture from Mongo.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- A dashboard category such as ORGANIC is now the only stored source (dash_organic). Without a category
+- the earliest TeleCRM capture is stored once.
+- Page hits
+- later lead_source rows
+- and stage changes no longer append source rows.
+- Mongo no longer writes source lead_recapture or reopens a stage to Fresh because capture frequency increased.
+- Booked to Lead still maps to In Pipeline. Converted patients are still held.
+
+### Reason
+Dashboard category, website lead source, page hits, and stage changes were stacked as separate sources. lead_recapture belongs to TeleCRM when an existing dashboard user is captured again, not to the Mongo join.
+
+### Validation
+- node --check new-telecrm-webhook.js PASS
+- node scripts/validate.js JS and workflow JSON PASS; protected-file check fails because these approved files were edited
+- Canonical schema assertions for the new source rule PASS. Pre-existing failures remain: WF1 session rescheduled map
+- and Converted temperature skip-write.
+
+### Risks / Notes
+- Live n8n keeps the old source list until 1-sync-webhook.json
+- 3-dashboard-to-telecrm.json
+- 4-final-source.json
+- and main prod.json are re-imported.
+- Sid 9098765456 already moved from booked back to LEAD
+- so a later sync will collapse source to dash_organic but will not replay Booked to Lead into In Pipeline.
+- A second TeleCRM capture of an existing dashboard user is no longer tagged in Mongo. TeleCRM's own lead recapture still owns that.
+
+### Manual Verification Required
+- Re-import the edited workflows and re-sync 9098765456. source should be one dash_organic row. stage history should still show the booking and the return to LEAD.
+- Cancel a patient whose join row is still BOOKED_WITHOUT_TOKEN. TeleCRM should become In Pipeline
+- with no lead_recapture source.
+
+
+## 2026-10-01 — Store join timestamps as epoch milliseconds
+
+**Agent:** AI coding agent
+
+### Objective
+Keep created_at, modified_at, last_synced_at, telecrm_first_interaction_date, and source/stage occurred_at as numbers.
+
+### Files Created
+- None
+
+### Files Modified
+- `AGENT_CHANGELOG.md`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/5-one-time-canonical-migration.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Finalize steps now stamp those fields to epoch milliseconds before upsert
+- The one-time migration converts stored date and ISO values to long
+- created_on stays an ISO string
+
+### Reason
+Finalize steps wrote ISO strings after the builders converted timestamps, and the one-time migration copied those strings through, so Compass still showed String.
+
+### Validation
+- node scripts/validate-canonical-schema.js reached the pre-existing reschedule assertion after the new number assertions passed
+- Finalize stamp check confirmed number types for the six timestamp fields and left created_on as a string
+- node scripts/validate.js JSON and syntax checks passed
+
+### Risks / Notes
+- Existing new-telecrm documents stay strings until the one-time migration is re-imported and run
+- Live n8n keeps the old behavior until workflows 1 and 3 and main prod are re-imported
+
+### Manual Verification Required
+- Re-import 1-sync-webhook.json
+- 3-dashboard-to-telecrm.json
+- and main prod.json
+- Back up new-telecrm
+- then run the one-time canonical migration so existing rows become numbers
+- Confirm Compass shows Number or Long for created_at
+- modified_at
+- last_synced_at
+- telecrm_first_interaction_date
+- source.occurred_at
+- and stage.occurred_at
+
+
+## 2026-10-05 — Compare New CRM last week with new-telecrm
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Check whether the New CRM Last Week pivot matches new-telecrm.
+
+### Files Created
+- `mcp/findings/new-crm-last-week-vs-new-telecrm-2026-10-05.md`
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- Compared the 28 Sep 2026 New CRM pivot (461 leads) with stance-development.new-telecrm. That day and the week 28 Sep-4 Oct IST both have 0 documents. Newest created_on is 21 Sep 2026.
+
+### Reason
+The report date is after the last write to the join collection.
+
+### Validation
+- Read-only aggregates on stance-development.new-telecrm and users. No workflow files edited.
+
+### Risks / Notes
+- None
+
+### Manual Verification Required
+- None
+
+
+## 2026-10-05 — Visit-only Converted and booked-to-LEAD Not Shown Up
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Stop treating a paid or invoiced first visit as Converted, and set TeleCRM to Not Shown Up when the dashboard moves from a booked status back to LEAD.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `reconcile-telecrm-stage.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- dash_firstvisitapppointment is visited only when a first-visit appointment status is VISITED. PAID and INVOICE_GENERATED stay not_visited and do not set conversionStatus.
+- A user still on BOOKED, BOOKED_WITH_TOKEN, or BOOKED_WITHOUT_TOKEN with no VISITED first visit stays Session booked, including when the stored join value is Converted from a token payment.
+- ACTIVE, PACKAGE, PACKAGE_EXPIRED, DISCHARGED, and INACTIVE still map to Converted, as does a VISITED first visit and the existing Fresh-reset heal for a Converted lead.
+- BOOKED, BOOKED_WITH_TOKEN, and BOOKED_WITHOUT_TOKEN moving to LEAD now set Not Shown Up. Workflow 3 still pushes that because the dashboard status changed. A lead that was never booked is unchanged.
+- Removed the reschedule force to In Pipeline. A reschedule that leaves the user booked stays Session booked. A reschedule, cancel, or no-show that returns the dashboard to LEAD becomes Not Shown Up.
+- reconcile-telecrm-stage.js now maps only VISITED to Converted and BOOKED to Session booked. It was not run with --apply.
+
+### Reason
+Token payment was counted as a visit, so conversionStatus became Converted while TeleCRM stayed Session booked and the dashboard stayed Booked with token. A booking that falls back to LEAD was In Pipeline; sales wants that shown as Not Shown Up.
+
+### Validation
+- node scripts/validate-canonical-schema.js — status assertions PASS. Stops on the pre-existing temperature assertion that Converted leads must skip writes.
+- node scripts/validate.js — JS syntax and workflow JSON PASS. Protected-file check FAIL because this task edited the approved workflow and root JS files. Secret heuristic FAIL is pre-existing in scripts/sync-1000-users.js.
+
+### Risks / Notes
+- Existing join rows correct on the next sync for that phone. There is no backfill and no TeleCRM push from this change.
+- A reschedule that leaves dashboard status on BOOKED, BOOKED_WITH_TOKEN, or BOOKED_WITHOUT_TOKEN stays Session booked. Not Shown Up happens only when dashboard status returns to LEAD.
+- A VISITED first visit, or a converted dashboard lifecycle status, is not downgraded to Not Shown Up.
+
+### Manual Verification Required
+- On the next sync of a BOOKED_WITH_TOKEN user whose first visit is only PAID, confirm conversionStatus becomes Session booked and TeleCRM is not pushed.
+- Move a booked patient back to LEAD and confirm workflow 3 pushes Not Shown Up. A never-booked LEAD stays unchanged.
+- Confirm a first visit with status VISITED still becomes Converted.
+
+
+## 2026-10-05 — Do not overwrite LEAD with a stale booked sync
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Stop a sync that already loaded a booked dashboard status from writing Session booked after the user has become LEAD.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Workflow 1 re-reads users.profileData.status immediately before the upsert.
+- If that fresh status is LEAD and this run loaded BOOKED, BOOKED_WITH_TOKEN, or BOOKED_WITHOUT_TOKEN, the join stores dash_status LEAD and conversionStatus Not Shown Up, and does not push Session booked.
+- The same guard runs in new-telecrm-webhook.js before replaceOne, using the patient id already joined.
+
+### Reason
+Workflow 3 posted Not Shown Up, then a sync that still had Booked without token finished and wrote Session booked onto new-telecrm while TeleCRM stayed Not Shown Up.
+
+### Validation
+- node scripts/validate-canonical-schema.js — new stale-booked assertions and workflow wiring PASS. Stops on the pre-existing temperature assertion that Converted leads must skip writes.
+- node --check new-telecrm-webhook.js — PASS.
+
+### Risks / Notes
+- Re-import new workflows/1-sync-webhook.json for this to run in n8n. Workflow 3 does not need a new import for this guard.
+- If the re-read finds no user, the sync keeps the status it already decided.
+
+### Manual Verification Required
+- Re-import new workflows/1-sync-webhook.json.
+- Set a booked test patient to LEAD and confirm new-telecrm stays Not Shown Up with dash_status LEAD after the following sync.
+
+
+## 2026-10-05 — Push booking name updates onto the existing TeleCRM lead
+
+**Agent:** AI coding agent
+
+### Objective
+When a book.stance.health visitor verifies their phone, the Stance user is created as firstName Lead. Typing the real name later was not sent to TeleCRM, because the push ran only when dashboard status changed.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Workflow 3 now pushes a real first/last name even when status stays LEAD. The request keeps the current TeleCRM status so an In Pipeline lead is not reset to Fresh. The word Lead is treated as the phone-verification placeholder and is not written over a real CRM name.
+- If the mirror row is not there yet, a LEAD user whose name just became real is updated on the same 10-digit phone used to create the lead.
+- The JS sync path does the same repair when the CRM name is still blank or Lead and the dashboard name is a real person. A different real CRM name is left alone.
+- Schema checks assert the name-push flag, the placeholder filter, and the update-branch gate.
+
+### Reason
+The lead is matched by phone. A name change has to update that same lead. Matching on name as well would miss the row stored as Lead.
+
+### Validation
+- node --check new-telecrm-webhook.js — PASS
+- Parsed Workflow 3 Check Status and Finalize Status Decision — PASS
+- node scripts/validate.js — protected-file and pre-existing secret-scan failures; syntax and JSON parse PASS
+- node scripts/validate-canonical-schema.js — name-push asserts passed; later temperature assertion Converted leads must skip writes failed and is outside this change
+
+### Risks / Notes
+- n8n keeps running the previously imported workflow until 3-dashboard-to-telecrm.json is re-imported and the TeleCRM credential is rebound.
+- A name-only push sends the current TeleCRM status with the new name. If that status cannot be read, a LEAD with no mirror row is sent as Fresh.
+
+### Manual Verification Required
+- Re-import new workflows/3-dashboard-to-telecrm.json in n8n.
+- Verify a phone on dev.book.stance.health, then enter a real name, and confirm the TeleCRM lead name changes without the stage moving.
+
+
+## 2026-10-06 — Re-read the booking name before writing new-telecrm
+
+**Agent:** AI coding agent
+
+### Objective
+Phone verification creates the Stance user as firstName Lead. The booking form saves the real name while Workflow 3 is still running and the late upsert was storing that stub.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Workflow 3 re-reads the user by dash_patient_id after the slow join and copies first name last name gender email and dob onto the document that is about to be upserted.
+- A stored real name is kept when that re-read still shows the Lead placeholder.
+- A whole profileData save and a replace are treated as name changes so TeleCRM gets the new name without a status change.
+- Workflow 1 and the JS sync apply the same profile copy on the user read that already happens immediately before upsert.
+
+### Reason
+new-telecrm.name and dash_firstName stayed Lead after profileData.firstName was already the person's name. Gender and email on the same save were missed for the same reason.
+
+### Validation
+- node --check new-telecrm-webhook.js — PASS
+- node scripts/validate-canonical-schema.js — name re-read asserts PASS; stops on the pre-existing temperature assertion that Converted leads must skip writes
+
+### Risks / Notes
+- n8n keeps the previously imported workflows until 1-sync-webhook.json and 3-dashboard-to-telecrm.json are re-imported.
+- The existing Lead row is not rewritten until that phone is synced again.
+
+### Manual Verification Required
+- Re-import new workflows/1-sync-webhook.json and new workflows/3-dashboard-to-telecrm.json and re-select the Mongo credential.
+- Sync phone 6360159564 and confirm new-telecrm name is Prema Prema with dash_gender FEMALE.
+
+
+## 2026-10-06 — Store join dates as ISO text and created_on_epoch
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Store created_at, modified_at, last_synced_at, calculated_at, and the other join dates as ISO-8601 text, and rename created_on to created_on_epoch so that field stays epoch milliseconds.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/5-one-time-canonical-migration.json`
+- `new workflows/main prod.json`
+- `new workflows/new-telecrm-daily-report-slack.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- created_at, modified_at, last_synced_at, and calculated_at are now ISO-8601 text.
+- telecrm_first_interaction_date, telecrm_last_contacted_date, dash_dob, source.occurred_at, and stage.occurred_at are ISO-8601 text.
+- created_on is renamed to created_on_epoch and stored as epoch milliseconds. The old created_on field is dropped on the next replace.
+- The one-time migration converts existing dates to ISO text and copies created_on into created_on_epoch.
+- The daily report matches created_at as ISO text and created_on_epoch as a number, and still matches legacy created_on until rows are rewritten.
+
+### Reason
+created_at and the other timestamps were epoch numbers while created_on was an ISO string, so the two creation fields were easy to mix up.
+
+### Validation
+- node --check new-telecrm-webhook.js PASS
+- node scripts/validate-canonical-schema.js reached the pre-existing Converted temperature assertion after the new ISO and created_on_epoch assertions passed
+- node scripts/validate.js JSON and syntax PASS. Protected-file check FAIL because this task edited the approved workflow and webhook files. Secret heuristic FAIL is pre-existing in scripts/sync-1000-users.js.
+
+### Risks / Notes
+- Existing new-telecrm rows keep the old types until 5-one-time-canonical-migration.json is re-imported and run.
+- Live n8n keeps the old types until workflows 1, 3, 4, main prod, and the daily report are re-imported.
+- A dashboard sync of an old row that has created_on but no created_at can fall through to the user created time until the migration has copied created_on into created_on_epoch.
+
+### Manual Verification Required
+- Re-import 1-sync-webhook.json, 3-dashboard-to-telecrm.json, 4-final-source.json, 5-one-time-canonical-migration.json, main prod.json, and new-telecrm-daily-report-slack.json.
+- Back up new-telecrm, then run the one-time migration.
+- Confirm Compass shows String for created_at, modified_at, last_synced_at, calculated_at, and occurred_at, and Number or Long for created_on_epoch. created_on should be gone.
+
+
+## 2026-10-06 — Fix migration $size on a missing field
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Stop the one-time migration from calling $size on a missing field.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/5-one-time-canonical-migration.json`
+
+### Files Deleted
+- None
+
+### Changes
+- The migration now reads let, map, and filter variables with $$, including $$current for $size, $$entry for source and stage rows, $$raw for date conversion, and $$ROOT when keeping the canonical fields.
+- Document fields such as $source and $created_on stay single-dollar field paths.
+
+### Reason
+$size was given $current, which MongoDB reads as a document field. The array is the let variable $$current. The same single-dollar mistake was on the row, date, and $$ROOT variables, so those would have been missing too once $size passed.
+
+### Validation
+- Parsed 5-one-time-canonical-migration.json and confirmed $size now receives $$current, with $$legacy as the fallback.
+- Confirmed source and stage rows use $$entry, date conversion uses $$raw, and the final field filter uses $$ROOT.
+
+### Risks / Notes
+- The failed aggregation should not have written. Re-import the workflow before running it again, or n8n will execute the old pipeline.
+
+### Manual Verification Required
+- Re-import 5-one-time-canonical-migration.json into n8n, then run it again. The copy already in n8n still has the failing pipeline.
+
+
+## 2026-10-06 — Store ISO dates as BSON Date and rename created_on
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Store all canonical date fields as MongoDB BSON Date values while keeping only created_on_epoch as epoch milliseconds and removing created_on.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/4-temperature-realtime.json`
+- `new workflows/5-one-time-canonical-migration.json`
+- `new workflows/main prod.json`
+- `new workflows/new-telecrm-daily-report-slack.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Standalone sync removes created_on before replaceOne, stores created_on_epoch as BSON Long, and converts canonical root and history dates to BSON Date.
+- n8n sync, dashboard sync, final-source, and combined workflow cleanup stages convert canonical dates and source/stage occurred_at to BSON Date and unset created_on after every upsert.
+- The one-time migration emits BSON Date instead of ISO strings, keeps created_on_epoch as epoch Long, and removes created_on.
+- Temperature workflows write calculated_at as BSON Date.
+- The daily report normalizes BSON stage dates for comparisons and matches BSON created_at dates without losing legacy compatibility.
+
+### Reason
+ISO text is a BSON string. The requested non-string ISO representation in MongoDB is BSON Date. The previous sync added created_on_epoch without reliably removing created_on.
+
+### Validation
+- Focused sample-row assertion PASS: created_on absent, created_on_epoch BSON Long, created_at/dash_dob/source.occurred_at/stage.occurred_at BSON Date.
+- node --check new-telecrm-webhook.js PASS.
+- Canonical schema assertions for BSON date storage passed; suite stops at the pre-existing Converted-temperature assertion.
+- node scripts/validate.js passed JavaScript syntax, workflow JSON parsing, and MCP self-tests. Expected protected-file check fails because the explicitly approved protected files changed; the pre-existing secret heuristic still flags scripts/sync-1000-users.js.
+- git diff --check PASS and IDE lint diagnostics report no errors.
+
+### Risks / Notes
+- Live n8n will keep the old behavior until all edited workflow exports are re-imported.
+- Existing rows keep created_on and old date types until the corrected one-time migration is run.
+- MongoDB Compass displays BSON Date using ISO notation but labels its type Date, not String or Text.
+
+### Manual Verification Required
+- Re-import 1-sync-webhook.json, 3-dashboard-to-telecrm.json, 4-final-source.json, 4-temperature-realtime.json, 5-one-time-canonical-migration.json, main prod.json, and new-telecrm-daily-report-slack.json.
+- Back up new-telecrm, then run the one-time migration.
+- Verify created_on is absent, created_on_epoch is Long, and the other date fields show BSON Date in Compass.
+
+
+## 2026-10-06 — Watch stance-development and create missing dashboard leads
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Ensure newly created dashboard users are joined into new-telecrm and created in TeleCRM even when no TeleCRM mirror row exists yet.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/2a-watcher-telecrm.json`
+- `new workflows/2b-watcher-users.json`
+- `new workflows/2c-watcher-appointments.json`
+- `new workflows/2d-watcher-web-visitors.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-temperature-realtime.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Aligned TeleCRM, users, appointments, web_visitors, dashboard-to-TeleCRM, and realtime-temperature change-stream triggers to stance-development.
+- Workflow 3 still upserts new-telecrm before the TeleCRM branch.
+- When both the TeleCRM mirror and existing join row are missing, Workflow 3 now creates the TeleCRM lead on the first available user event even if the insert event was previously missed.
+- Inactive watcher exports remain inactive; no production workflow was executed.
+
+### Reason
+The standalone dashboard workflow and watcher exports watched stance-dashboard while the current users/new-telecrm data and combined workflow use stance-development. A missed insert also needed a safe replay path on the next user update.
+
+### Validation
+- All six workflow trigger exports resolve to stance-development.
+- Workflow 3 static assertion confirms the missing-join create gate uses dashStatusChanged || joinWasMissing.
+- Workflow JSON parsing, JavaScript syntax, and MCP self-tests pass.
+- Canonical assertions for the database targets and create gate pass before the pre-existing Converted-temperature assertion.
+- git diff --check PASS; no IDE lint diagnostics.
+
+### Risks / Notes
+- Live n8n does not change until the edited exports are re-imported and activated with the correct Mongo and TeleCRM credentials.
+- The already-missed patient will not replay automatically merely from importing; any subsequent user update will trigger the new missing-join path.
+- The 2a-2d exports remain inactive by design and must only be activated if they are the intended deployment instead of Workflow 3/main prod.
+
+### Manual Verification Required
+- Re-import and activate 3-dashboard-to-telecrm.json with both Mongo trigger and Mongo nodes bound to stance-development, plus the TeleCRM Async credential.
+- For phone 9867534678, save/update the user once after deployment to replay the missed event.
+- Confirm Upsert Document creates new-telecrm first, then Push Create to TeleCRM runs.
+
+
+## 2026-10-06 — Restore production watcher database
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Revert the incorrect development-database trigger change and restore the production watcher exports to stance-dashboard.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/2a-watcher-telecrm.json`
+- `new workflows/2b-watcher-users.json`
+- `new workflows/2c-watcher-appointments.json`
+- `new workflows/2d-watcher-web-visitors.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-temperature-realtime.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Restored all standalone watcher, dashboard push, and realtime temperature triggers to stance-dashboard.
+- Retained the Workflow 3 missing-join fallback so a user with no join row and no TeleCRM mirror can be created on the next event.
+- Did not change activation flags or execute any workflow.
+
+### Reason
+The available MCP session was connected to development data, but the user's live workflows and patient data use the production stance-dashboard database.
+
+### Validation
+- All six restored trigger parameters equal stance-dashboard.
+- Workflow 3 missing-join fallback remains present.
+- Workflow JSON parsing, JavaScript syntax, and MCP self-tests pass.
+- Canonical target assertions pass before the pre-existing Converted-temperature assertion.
+- git diff --check PASS; no IDE lint errors.
+
+### Risks / Notes
+- Live n8n remains unchanged until the correct workflow export is re-imported.
+- The existing missed patient still needs one user update after Workflow 3 is re-imported and active to replay the event.
+
+### Manual Verification Required
+- Re-import 3-dashboard-to-telecrm.json only if the missing-join fallback is needed; keep its Mongo trigger and Mongo credentials on production stance-dashboard.
+- Save/update phone 9867534678 once and inspect the Workflow 3 execution path.
+
+
+## 2026-10-06 — Watch production users for new-telecrm
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Restore dashboard patient inserts into new-telecrm after the user trigger was pointed at a database production does not have.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Pointed the combined workflow user change-stream trigger at stance-dashboard, including replace, matching the production database that holds users.
+- Dashboard touchpoint lookup in that workflow now reads Find Web Visitor1, the node on the user-insert path.
+- Schema checks now reject a stance-development user trigger and the webhook visitor node on the dashboard path.
+
+### Reason
+Production stance-dashboard.users has phone 9865643214 and other patients created after 08:41 IST, and none of those dashboard-only patients are in new-telecrm. The production cluster has no stance-development database, so a trigger watching that name never sees the insert. CRM webhook sync kept writing leads that already exist in TeleCRM.
+
+### Validation
+- Parsed main prod.json: Mongo Change Trigger database is stance-dashboard and Find Touchpoints1 reads Find Web Visitor1.
+- node scripts/validate-canonical-schema.js reached the new database assertions, then stopped at the pre-existing Converted-temperature assertion.
+
+### Risks / Notes
+- Live n8n does not change until the combined workflow is re-imported or the trigger database is edited there.
+- Patients created while the trigger was pointed at the wrong database are not replayed until that user is saved again.
+
+### Manual Verification Required
+- On the live n8n canvas, open Mongo Change Trigger and set the database to stance-dashboard, collection users. Re-import new workflows/main prod.json if that canvas is the combined workflow.
+- Save phone 9865643214 once in the dashboard so the change stream runs again. Confirm a new-telecrm row appears with that phone.
+- The same save is needed for the other patients created after 08:41 IST that are still missing from new-telecrm.
+
+
+## 2026-10-06 — Correct fix scope to Workflow 3
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Confine the production user-trigger fix to the standalone Workflow 3 deployment actually used by the human.
+
+### Files Created
+- None
+
+### Files Modified
+- `scripts/validate-canonical-schema.js`
+- `AGENT_CHANGELOG.md`
+
+### Files Deleted
+- None
+
+### Changes
+- Corrected the deployment scope: Workflow 3, not main prod, is the active dashboard-to-new-telecrm workflow.
+- Reverted the changes made in this task to main prod.json.
+- Kept a validation guard that Workflow 3 must watch production stance-dashboard.users.
+
+### Reason
+The human confirmed main prod.json has never been deployed. The live regression belongs to Workflow 3's trigger configuration; recommending the combined workflow would introduce an unused, stale workflow.
+
+### Validation
+- Workflow 3 parses as valid JSON.
+- Workflow 3 trigger targets stance-dashboard.users for insert, update, and replace.
+- Workflow 3 missing-join fallback uses dashStatusChanged || joinWasMissing and upserts new-telecrm before TeleCRM branching.
+- git diff --check passed; IDE reports no lint errors.
+
+### Risks / Notes
+- The local export cannot alter live n8n; Workflow 3 must be re-imported and its credentials confirmed.
+- The insert for 9865643214 already happened, so the user must be saved once after activation to generate a replay event.
+
+### Manual Verification Required
+- Re-import only new workflows/3-dashboard-to-telecrm.json over the existing Workflow 3.
+- Re-select the production Mongo trigger credential, production Mongo node credential, and TeleCRM Async credential if n8n clears them during import.
+- Activate Workflow 3, then save phone 9865643214 once to replay its missed insert.
+
+
+## 2026-10-06 — Accept all Workflow 3 trigger IDs
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Prevent Workflow 3 from silently stopping when Mongo Change Trigger emits an ID outside the documentId field.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Fetch User Doc now accepts documentId, documentKey._id, fullDocument._id, and Extended JSON $oid values.
+- The user lookup compares string forms of Mongo IDs so both ObjectId and string IDs match.
+- Invalid or missing IDs stop safely with a zero-result aggregation.
+- Added assertions protecting all supported trigger ID shapes.
+
+### Reason
+Fetch User Doc only read documentId and converted it directly to ObjectId. Missing or differently shaped IDs yielded no user; continueRegularOutput then made the execution look successful while Check Status & Extract returned no items.
+
+### Validation
+- All five focused cases passed: documentId, documentKey, fullDocument, Extended JSON $oid, and missing ID.
+- Workflow JSON parsing passed.
+- git diff --check passed and IDE reports no lint errors.
+- Canonical schema suite reached the pre-existing Converted-temperature assertion; the new Workflow 3 assertions passed before it.
+
+### Risks / Notes
+- Live n8n remains unchanged until Workflow 3 is re-imported and published.
+- A missed change-stream event must be replayed by actually editing and saving the patient after deployment.
+
+### Manual Verification Required
+- Re-import only new workflows/3-dashboard-to-telecrm.json as the clean Workflow 3 deployment and confirm its credentials.
+- Publish/activate Workflow 3.
+- Edit and save phone 9867543567 once, then confirm Fetch User Doc returns that phone and Upsert Document creates the join row.
+
+
+## 2026-10-06 — Make Workflow 3 fail loudly
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Harden the full dashboard-to-new-telecrm branch so optional empty joins are valid and an execution cannot succeed unless its join row is readable after upsert.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Replaced every Workflow 3 $limit:0 fallback with a valid guaranteed-empty $match pipeline.
+- Made Fetch User Doc Mongo errors fatal and added Require Fetched User to fail when the trigger ID resolves to no patient.
+- Added Verify new-telecrm Write after Upsert Document using the same Mongo credential.
+- Added Require new-telecrm Write to fail if the expected canonical phone cannot be read back.
+- Moved cleanup and TeleCRM create/update branches after successful write verification.
+- Updated canonical assertions for the complete guarded branch.
+
+### Reason
+The live branch appeared green through Upsert Document while the expected phone was absent. Several empty-result paths used invalid $limit:0 pipelines, critical fetch errors were swallowed, and no node verified that the upsert actually produced a join row.
+
+### Validation
+- Workflow JSON parsing passed.
+- Graph assertions passed for fetch guard, upsert verification, and post-verification branching.
+- Confirmed no invalid $limit:0 remains in Workflow 3 empty-result paths.
+- git diff --check passed and IDE reports no lint errors.
+- Canonical suite passed all new Workflow 3 assertions, then stopped at the pre-existing Converted-temperature assertion.
+
+### Risks / Notes
+- The new Verify new-telecrm Write node needs the same production Mongo credential as Fetch User Doc and Upsert Document after import.
+- The live workflow remains unchanged until the corrected Workflow 3 is re-imported and published.
+- Missed events require one real patient save after deployment.
+
+### Manual Verification Required
+- Re-import only new workflows/3-dashboard-to-telecrm.json as a clean workflow.
+- Assign the same production Mongo credential to every green Mongo node, including Verify new-telecrm Write, and assign the TeleCRM Async credential to both HTTP nodes.
+- Publish the workflow and edit/save phone 9867543567 once.
+- Confirm execution reaches Require new-telecrm Write. If the write is missing, the execution now fails with the exact phone instead of showing success.
+
+
+## 2026-10-06 — Fix Workflow 3 verification phone
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Make the new-telecrm read-after-write guard resolve the canonical phone reliably in full and partial n8n execution contexts.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Verify new-telecrm Write now resolves phone from Upsert output, Finalize Status Decision, then Check Status & Extract.phone10.
+- Require new-telecrm Write uses Check Status & Extract.phone10 when finalized output is unavailable.
+- The guard now reports an actual failed write for the canonical phone instead of a misleading missing-phone error.
+
+### Reason
+The first guard read the phone only from Finalize Status Decision and reported '(missing)' even though Check Status & Extract had already produced the canonical phone.
+
+### Validation
+- Workflow JSON parsing passed.
+- Focused assertions confirm all three verification phone sources are present.
+- git diff --check passed and IDE reports no lint errors.
+
+### Risks / Notes
+- Live n8n requires re-importing the corrected Workflow 3 again.
+- If the upsert is genuinely writing through the wrong Mongo credential, the corrected guard will now fail with new-telecrm write verification failed for the actual phone.
+
+### Manual Verification Required
+- Re-import and publish new workflows/3-dashboard-to-telecrm.json.
+- Assign the production Mongo credential to Verify new-telecrm Write as well as Upsert Document.
+- Edit/save the patient once and inspect Require new-telecrm Write if it fails.
+
+
+## 2026-10-06 — Preserve phone through Workflow 3 finalize
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Fix the actual Workflow 3 no-op upsert by preserving the built canonical join document after the late user profile re-read.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Finalize Status Decision now starts from Build Full Document output, retaining phone and the complete canonical join payload.
+- The existing fresh-profile logic still overlays the newly re-read user fields afterward.
+- Added assertions preventing Finalize from ever replacing the join document with its projected profile input again.
+
+### Reason
+Finalize Status Decision copied its direct input, which is Re-read User Profile output. That projection contains profile fields but no phone. The Mongo update node silently filters items missing its phone updateKey, appears green, and writes nothing.
+
+### Validation
+- Build Full Document emits extracted.phone10.
+- Finalize Status Decision starts from Build Full Document.
+- Upsert Document remains keyed by phone with upsert enabled.
+- Workflow JSON parsing and git diff checks passed; IDE reports no lint errors.
+- Canonical suite passed the new assertions and stopped later at the pre-existing Converted-temperature assertion.
+
+### Risks / Notes
+- Live n8n requires one final re-import of Workflow 3.
+- The patient update must be replayed after publishing because prior failed executions are not retried.
+
+### Manual Verification Required
+- Re-import and publish new workflows/3-dashboard-to-telecrm.json.
+- Edit/save phone 9867543567 once.
+- Confirm Upsert Document output contains phone and Require new-telecrm Write passes.
+
+
+## 2026-10-06 — Use explicit Workflow 3 replacement upsert
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Eliminate the legacy Mongo update node's silent no-op behavior and make the canonical join write deterministic.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Changed Upsert Document from legacy update node v1 to findOneAndReplace node v1.3.
+- Kept phone as the update key with upsert enabled, producing a full canonical replacement for existing rows and an insert for missing rows.
+- Added assertions locking the write operation, node version, update key, and upsert flag.
+
+### Reason
+The read-after-write guard confirmed no row after a green Upsert node. Legacy Mongo node version 1 filters items missing its update key without throwing. Workflow 3 now preserves phone, and the write node should explicitly reject any missing phone rather than return empty.
+
+### Validation
+- Workflow JSON parsed successfully.
+- Confirmed Finalize preserves Build Full Document and its phone.
+- Confirmed Upsert Document is findOneAndReplace v1.3 keyed by phone with upsert=true.
+- git diff --check passed and IDE reports no lint errors.
+
+### Risks / Notes
+- All regular Mongo nodes must still use the same target credential. The latest failing phone was absent from both known production and development clusters, so credential consistency must be verified in live n8n.
+- Live n8n requires re-importing and publishing Workflow 3.
+
+### Manual Verification Required
+- Re-import and publish new workflows/3-dashboard-to-telecrm.json.
+- Select the exact same MongoDB credential on Fetch User Doc, Upsert Document, and Verify new-telecrm Write.
+- Edit/save one patient. Upsert Document must now either output the canonical payload or fail explicitly; Require new-telecrm Write must pass.
+
+
+## 2026-10-06 — Replay missing dashboard patients
+
+**Agent:** GPT-5.6 Sol
+
+### Objective
+Backfill dashboard patients created after 08:41 IST whose insert events were missed while Workflow 3 was broken.
+
+### Files Created
+- None
+
+### Files Modified
+- `AGENT_CHANGELOG.md`
+
+### Files Deleted
+- None
+
+### Changes
+- Identified 10 missing patient phones by anti-joining users created after 08:41 IST against new-telecrm.
+- Updated only each missing user's root updatedAt timestamp to emit a change-stream event; phone, profile, status, and clinical fields were untouched.
+- Workflow 3 inserted all 10 missing new-telecrm rows.
+
+### Reason
+Ten production stance-dashboard users existed without corresponding new-telecrm rows. The corrected Workflow 3 was confirmed working, so root updatedAt changes safely replayed those user events.
+
+### Validation
+- Replay events written: 10; concurrent skips: 0.
+- Post-replay verification found all 10 phones in production new-telecrm.
+- Remaining missing count: 0.
+
+### Risks / Notes
+- The replay intentionally emitted normal users update events, so other active user watchers may also have observed them.
+- One missing phone was an obvious test-style number, but the human explicitly requested all missing dashboard patients after the cutoff.
+
+### Manual Verification Required
+- None
+
+
+## 2026-10-06 — Store Node sync dates as BSON Date
+
+**Agent:** AI coding agent
+
+### Objective
+Make new-telecrm-webhook.js write join date fields as BSON Date before replaceOne so the backfill does not store ISO strings.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- toEpoch now returns the milliseconds of a Date unchanged
+- including dates before 2001.
+- withBsonDates converts created_at
+- modified_at
+- last_synced_at
+- calculated_at
+- dash_dob
+- TeleCRM interaction dates
+- and source/stage occurred_at to Date immediately before replaceOne.
+- created_on_epoch stays an epoch number.
+- Canonical schema test covers the Aastha-shaped string dates and a 2001 date of birth.
+
+### Reason
+The Node sync still called toISOString, so a refresh such as phone 7439693895 kept dash_dob, source.occurred_at, stage.occurred_at, created_at, modified_at, and last_synced_at as strings.
+
+### Validation
+- node --check new-telecrm-webhook.js — PASS
+- node scripts/validate-canonical-schema.js — new BSON Date assertions passed; suite still stops at the pre-existing Converted-temperature assertion
+
+### Risks / Notes
+- Rows already stored as strings stay strings until syncOne or the one-time migration rewrites them.
+- n8n cleanup already uses $toDate; this change only affects the Node replaceOne path used by the backfill.
+
+### Manual Verification Required
+- Run the 10-phone backfill
+- then confirm Compass type is Date on created_at
+- dash_dob
+- and stage.occurred_at for those phones.
+
+
+## 2026-10-06 — Store source history oldest-first
+
+**Agent:** AI coding agent
+
+### Objective
+Keep every distinct capture in source[] with the earliest capture at source[0].
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- buildSourceHistory and the n8n sync
+- dashboard
+- final-source
+- and combined builders append each dated TeleCRM capture plus the dashboard category.
+- source[] is sorted oldest-first. Rows with the same source and the same time collapse to one.
+- lead_recapture and unlabeled others are not stored. Page hits are used only when there is no category and no TeleCRM capture.
+- stage[] stays newest-first.
+
+### Reason
+The join stored one capture, so a dashboard category replaced earlier TeleCRM sources and most documents had a single source object.
+
+### Validation
+- node --check new-telecrm-webhook.js — PASS
+- node scripts/validate-canonical-schema.js — source FIFO assertions passed; suite still stops at the pre-existing Converted-temperature assertion
+
+### Risks / Notes
+- Documents already stored with one source stay that way until the backfill or the next sync.
+- Live n8n keeps the one-source builder until 1-sync-webhook
+- 3-dashboard-to-telecrm
+- 4-final-source
+- and main prod are re-imported.
+- A patient with only a dashboard category and no separate TeleCRM capture still has one source row.
+
+### Manual Verification Required
+- Re-import the four workflows before relying on live n8n writes.
+- After the later backfill
+- confirm source[0].source is the earliest occurred_at and stage[0] is still the newest stage.
+

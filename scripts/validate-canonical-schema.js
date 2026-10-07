@@ -16,12 +16,12 @@ const allowed = [
   'telecrm_form_health_concern', 'telecrm_#ofCalls', 'telecrm_#ofmessages',
   'telecrm_connected_calls', 'telecrm_first_interaction_date', 'telecrm_first_call_done',
   'telecrm_last_contacted_date', 'telecrm_drop_off_reason', 'telecrm_capture_frequency',
-  'source', 'stage', 'created_on', 'created_at', 'modified_at', 'last_synced_at',
+  'source', 'stage', 'created_on_epoch', 'created_at', 'modified_at', 'last_synced_at',
   'temperature', 'calculated_at', 'temperature_derived',
 ].sort();
 const requiredJoinKeys = [
   'phone', 'conversionStatus', 'source', 'stage',
-  'created_on', 'created_at', 'modified_at', 'last_synced_at',
+  'created_on_epoch', 'created_at', 'modified_at', 'last_synced_at',
 ];
 const temperatureKeys = new Set([
   'temperature', 'calculated_at', 'temperature_derived',
@@ -36,7 +36,7 @@ const sourceEventKeys = new Set([
 function epoch(iso) {
   const ms = new Date(iso).getTime();
   if (Number.isNaN(ms)) throw new Error(`bad iso ${iso}`);
-  return ms;
+  return new Date(ms).toISOString();
 }
 function assertPublicSource(entry) {
   assert(!Object.prototype.hasOwnProperty.call(entry, 'origin'), `origin must not be stored: ${JSON.stringify(entry)}`);
@@ -102,7 +102,7 @@ const migration = workflow('5-one-time-canonical-migration.json');
 for (const wf of [wf1, wf3, wf4, wfTemp, main, migration]) compileCodeNodes(wf);
 execFileSync(process.execPath, ['--check', path.join(root, 'new-telecrm-webhook.js')]);
 
-const { buildTeleCRMPart, buildSourceHistory, buildStageHistory, toMs, toEpoch, bar, finalizeTelecrmStatus } = require(path.join(root, 'new-telecrm-webhook.js'));
+const { buildTeleCRMPart, buildSourceHistory, buildStageHistory, toMs, toEpoch, bar, finalizeTelecrmStatus, applyFreshDashStatus, applyFreshProfile, withBsonDates } = require(path.join(root, 'new-telecrm-webhook.js'));
 assert.strictEqual(typeof toMs, 'function', 'toMs must be defined');
 assert.strictEqual(toMs, toEpoch);
 const sourceHist = buildSourceHistory(
@@ -335,8 +335,26 @@ const uiMapped = buildTeleCRMPart({
     'Calls Count': 7,
   },
 }, {});
-assert.strictEqual(uiMapped.telecrm_first_interaction_date, 1720000000000);
+assert.strictEqual(uiMapped.telecrm_first_interaction_date, new Date(1720000000000).toISOString());
 assert.strictEqual(uiMapped.telecrm_last_contacted_date, new Date(1720001000000).toISOString());
+const dob = new Date('2001-05-18T00:00:00.000Z');
+assert.strictEqual(toEpoch(dob), dob.getTime(), 'Date values must not be scaled by the epoch heuristic');
+const storedDates = withBsonDates({
+  created_at: '2026-07-13T07:40:44.887Z',
+  modified_at: '2026-09-09T05:06:14.776Z',
+  last_synced_at: '2026-10-06T10:19:53.313Z',
+  dash_dob: '2001-05-18T00:00:00.000Z',
+  created_on_epoch: 1783928444887,
+  source: [{ source: 'dash_customer', occurred_at: '2025-08-18T06:26:42.829Z' }],
+  stage: [{ platform: 'telecrm', status: 'Converted', occurred_at: '2026-10-06T10:19:53.313Z' }],
+});
+for (const key of ['created_at', 'modified_at', 'last_synced_at', 'dash_dob']) {
+  assert.ok(storedDates[key] instanceof Date, `${key} must be a BSON Date`);
+}
+assert.strictEqual(storedDates.dash_dob.toISOString(), '2001-05-18T00:00:00.000Z');
+assert.ok(storedDates.source[0].occurred_at instanceof Date);
+assert.ok(storedDates.stage[0].occurred_at instanceof Date);
+assert.strictEqual(storedDates.created_on_epoch, 1783928444887);
 assert.strictEqual(uiMapped.telecrm_capture_frequency, 1);
 assert.strictEqual(uiMapped.telecrm_connected_calls, 4);
 assert.strictEqual(uiMapped.telecrm_first_call_done, true);
@@ -394,9 +412,11 @@ const rescheduledDecision = finalizeTelecrmStatus({
   appointments: [{ status: 'BOOKED', rescheduledFrom: ['abc'] }],
   nowIso: '2026-09-22T00:00:00.000Z',
 });
-assert.strictEqual(rescheduledDecision.conversionStatus, 'In Pipeline');
+assert.strictEqual(rescheduledDecision.conversionStatus, 'Session booked', 'a reschedule that stays booked stays Session booked');
 assert.strictEqual(rescheduledDecision.should_push_telecrm, true);
-assert.strictEqual(rescheduledDecision.recapture_heal_reason, 'reschedule_in_pipeline');
+assert.strictEqual(rescheduledDecision.recapture_heal_reason, null);
+assert.strictEqual(rescheduledDecision.stage[0].status, 'Session booked');
+assert.strictEqual(rescheduledDecision.stage.length, 1, 'do not append a second Session booked row');
 
 const recaptureDecision = finalizeTelecrmStatus({
   conversionStatus: 'Fresh',
@@ -410,13 +430,14 @@ const recaptureDecision = finalizeTelecrmStatus({
   appointments: [{ status: 'CANCELLED', cancellationReason: 'OTHER' }],
   nowIso: '2026-09-22T00:00:00.000Z',
 });
-assert.strictEqual(recaptureDecision.conversionStatus, 'Fresh', 'recapture on a non-converted lead is Fresh');
+assert.strictEqual(recaptureDecision.conversionStatus, 'Fresh', 'a lead that was never booked stays Fresh');
 assert.strictEqual(recaptureDecision.should_push_telecrm, false, 'already Fresh — nothing to push');
-assert.strictEqual(recaptureDecision.source[0].source, 'website', 'earliest source stays at index 0');
-assert.strictEqual(recaptureDecision.source[recaptureDecision.source.length - 1].source, 'lead_recapture');
+assert.strictEqual(recaptureDecision.source.length, 1);
+assert.strictEqual(recaptureDecision.source[0].source, 'website');
+assert.strictEqual(recaptureDecision.is_lead_recapture, false, 'Mongo must not implement lead_recapture');
 
-// Every stage except Converted goes to Fresh when the lead is captured again.
-for (const stage of ['No Response', 'In Pipeline', 'Not Shown Up', 'Not Converted', 'Session booked']) {
+// A second TeleCRM capture does not rewrite Mongo source or reopen the stage.
+for (const stage of ['No Response', 'In Pipeline', 'Not Shown Up', 'Not Converted']) {
   const reopened = finalizeTelecrmStatus({
     conversionStatus: stage,
     currentTelecrmStatus: stage,
@@ -428,9 +449,10 @@ for (const stage of ['No Response', 'In Pipeline', 'Not Shown Up', 'Not Converte
     previous_capture_frequency: 2,
     nowIso: '2026-09-24T00:00:00.000Z',
   });
-  assert.strictEqual(reopened.conversionStatus, 'Fresh', `${stage} must reopen to Fresh on recapture`);
-  assert.strictEqual(reopened.should_push_telecrm, true, `${stage} → Fresh must be pushed`);
-  assert.strictEqual(reopened.recapture_push, true, `${stage} → Fresh pushes without a dash status change`);
+  assert.strictEqual(reopened.conversionStatus, stage, `${stage} must stay put when TeleCRM captures again`);
+  assert.strictEqual(reopened.should_push_telecrm, false, `${stage} must not be reopened`);
+  assert.strictEqual(reopened.is_lead_recapture, false);
+  assert(!reopened.source.some((entry) => entry.source === 'lead_recapture'));
 }
 
 // First sighting of a capture count is not a capture event: an absent or null stored count
@@ -463,8 +485,9 @@ const recaptureNoAppointments = finalizeTelecrmStatus({
   previous_capture_frequency: 1,
   nowIso: '2026-09-24T00:00:00.000Z',
 });
-assert.strictEqual(recaptureNoAppointments.conversionStatus, 'Fresh', 'recapture does not require an appointment');
-assert.strictEqual(recaptureNoAppointments.should_push_telecrm, true);
+assert.strictEqual(recaptureNoAppointments.conversionStatus, 'No Response', 'a second capture must not reopen No Response');
+assert.strictEqual(recaptureNoAppointments.should_push_telecrm, false);
+assert(!recaptureNoAppointments.source.some((entry) => entry.source === 'lead_recapture'));
 
 // Converted is the exception: it is never reopened, even on a capture event.
 const convertedHeld = finalizeTelecrmStatus({
@@ -539,8 +562,9 @@ const convertedRecapture = finalizeTelecrmStatus({
   nowIso: '2026-09-22T00:00:00.000Z',
 });
 assert.strictEqual(convertedRecapture.conversionStatus, 'Converted');
-assert.strictEqual(convertedRecapture.source[0].source, 'website', 'earliest source stays at index 0');
-assert.strictEqual(convertedRecapture.source[convertedRecapture.source.length - 1].source, 'lead_recapture');
+assert.strictEqual(convertedRecapture.source.length, 1);
+assert.strictEqual(convertedRecapture.source[0].source, 'website');
+assert(!convertedRecapture.source.some((entry) => entry.source === 'lead_recapture'));
 
 const trueFresh = finalizeTelecrmStatus({
   conversionStatus: 'Fresh',
@@ -554,7 +578,7 @@ const trueFresh = finalizeTelecrmStatus({
 assert.strictEqual(trueFresh.conversionStatus, 'Fresh');
 assert(!trueFresh.source.some((entry) => entry.source === 'lead_recapture'));
 
-// Booked → Lead is In Pipeline. A lead that was never booked is not rewritten.
+// Booked → Lead is Not Shown Up. A lead that was never booked is not rewritten.
 for (const previous of ['BOOKED', 'BOOKED_WITH_TOKEN', 'BOOKED_WITHOUT_TOKEN']) {
   const cancelledBooking = finalizeTelecrmStatus({
     conversionStatus: 'Session booked',
@@ -568,7 +592,7 @@ for (const previous of ['BOOKED', 'BOOKED_WITH_TOKEN', 'BOOKED_WITHOUT_TOKEN']) 
     previous_capture_frequency: 1,
     nowIso: '2026-09-25T00:00:00.000Z',
   });
-  assert.strictEqual(cancelledBooking.conversionStatus, 'In Pipeline', `${previous} → LEAD must be In Pipeline`);
+  assert.strictEqual(cancelledBooking.conversionStatus, 'Not Shown Up', `${previous} → LEAD must be Not Shown Up`);
   assert.strictEqual(cancelledBooking.should_push_telecrm, true);
   assert.strictEqual(cancelledBooking.recapture_heal_reason, 'booked_to_lead');
 }
@@ -585,8 +609,8 @@ const alreadyPipeline = finalizeTelecrmStatus({
   previous_capture_frequency: 1,
   nowIso: '2026-09-25T00:00:00.000Z',
 });
-assert.strictEqual(alreadyPipeline.conversionStatus, 'In Pipeline');
-assert.strictEqual(alreadyPipeline.should_push_telecrm, false, 'already In Pipeline — no second push');
+assert.strictEqual(alreadyPipeline.conversionStatus, 'Not Shown Up');
+assert.strictEqual(alreadyPipeline.should_push_telecrm, true, 'Booked → Lead moves In Pipeline to Not Shown Up');
 
 const standingLead = finalizeTelecrmStatus({
   conversionStatus: 'Session booked',
@@ -609,13 +633,89 @@ const convertedAfterBooking = finalizeTelecrmStatus({
   previous_dash_status: 'BOOKED_WITH_TOKEN',
   source: [{ source: 'website', occurred_at: '2026-09-22T00:00:00.000Z' }],
   stage: [{ platform: 'telecrm', status: 'Converted', occurred_at: '2026-09-22T00:00:00.000Z' }],
-  appointments: [{ status: 'PAID' }],
+  appointments: [{ status: 'VISITED' }],
   dash_firstvisitapppointment: 'visited',
   capture_frequency: 1,
   previous_capture_frequency: 1,
   nowIso: '2026-09-25T00:00:00.000Z',
 });
-assert.strictEqual(convertedAfterBooking.conversionStatus, 'Converted', 'Booked → Lead must not downgrade Converted');
+assert.strictEqual(convertedAfterBooking.conversionStatus, 'Converted', 'a visited patient must not become Not Shown Up');
+
+const paidStillBooked = finalizeTelecrmStatus({
+  conversionStatus: 'Converted',
+  currentTelecrmStatus: 'Converted',
+  dash_status: 'BOOKED_WITH_TOKEN',
+  source: [{ source: 'website', occurred_at: '2026-09-22T00:00:00.000Z' }],
+  stage: [{ platform: 'telecrm', status: 'Converted', occurred_at: '2026-09-22T00:00:00.000Z' }],
+  appointments: [{ status: 'PAID' }],
+  dash_firstvisitapppointment: 'not_visited',
+  capture_frequency: 1,
+  previous_capture_frequency: 1,
+  nowIso: '2026-09-25T00:00:00.000Z',
+});
+assert.strictEqual(paidStillBooked.conversionStatus, 'Session booked', 'a paid token without a visit stays Session booked');
+assert.strictEqual(paidStillBooked.should_push_telecrm, true);
+
+const visitedWhileBooked = finalizeTelecrmStatus({
+  conversionStatus: 'Session booked',
+  currentTelecrmStatus: 'Session booked',
+  dash_status: 'BOOKED_WITH_TOKEN',
+  source: [{ source: 'website', occurred_at: '2026-09-22T00:00:00.000Z' }],
+  stage: [{ platform: 'telecrm', status: 'Session booked', occurred_at: '2026-09-22T00:00:00.000Z' }],
+  appointments: [{ status: 'VISITED' }],
+  dash_firstvisitapppointment: 'visited',
+  capture_frequency: 1,
+  previous_capture_frequency: 1,
+  nowIso: '2026-09-25T00:00:00.000Z',
+});
+assert.strictEqual(visitedWhileBooked.conversionStatus, 'Converted', 'a VISITED first visit is Converted');
+
+const staleBooked = applyFreshDashStatus({
+  dash_status: 'BOOKED_WITHOUT_TOKEN',
+  conversionStatus: 'Session booked',
+  should_push_telecrm: false,
+  stage: [
+    { platform: 'telecrm', status: 'Session booked', occurred_at: 1 },
+    { platform: 'dash', status: 'BOOKED_WITHOUT_TOKEN', occurred_at: 1 },
+  ],
+}, 'LEAD', 50);
+assert.strictEqual(staleBooked.suppressed, true);
+assert.strictEqual(staleBooked.doc.dash_status, 'LEAD');
+assert.strictEqual(staleBooked.doc.conversionStatus, 'Not Shown Up');
+assert.strictEqual(staleBooked.doc.should_push_telecrm, false);
+assert.strictEqual(staleBooked.doc.stage[0].status, 'Not Shown Up');
+const stillBooked = applyFreshDashStatus({
+  dash_status: 'BOOKED_WITHOUT_TOKEN',
+  conversionStatus: 'Session booked',
+  stage: [],
+}, 'BOOKED_WITHOUT_TOKEN', 50);
+assert.strictEqual(stillBooked.suppressed, false);
+assert.strictEqual(stillBooked.doc.conversionStatus, 'Session booked');
+
+const healedName = applyFreshProfile(
+  { name: 'Lead', dash_firstName: 'Lead', dash_gender: 'MALE', phone: '6360159564' },
+  {
+    email: 'premaprema10554@gmail.com',
+    profileData: { firstName: 'Prema', lastName: 'Prema', gender: 'FEMALE', dob: 1285027200, status: 'LEAD' },
+  },
+  { name: 'Lead', dash_firstName: 'Lead', dash_gender: 'MALE' },
+);
+assert.strictEqual(healedName.name, 'Prema Prema', 'a fresh profile replaces the phone-verification name');
+assert.strictEqual(healedName.dash_firstName, 'Prema');
+assert.strictEqual(healedName.dash_lastName, 'Prema');
+assert.strictEqual(healedName.dash_gender, 'FEMALE');
+assert.strictEqual(healedName.dash_email, 'premaprema10554@gmail.com');
+assert.strictEqual(healedName.dash_dob, '2010-09-21T00:00:00.000Z');
+assert.strictEqual(healedName.phone, '6360159564');
+const keepRealName = applyFreshProfile(
+  { name: 'Lead', dash_firstName: 'Lead', dash_gender: 'MALE' },
+  { profileData: { firstName: 'Lead', gender: 'MALE', status: 'LEAD' } },
+  { name: 'Prema Prema', dash_firstName: 'Prema', dash_lastName: 'Prema', dash_gender: 'FEMALE', dash_email: 'prema@example.com' },
+);
+assert.strictEqual(keepRealName.name, 'Prema Prema', 'a later stub read must not replace a real name');
+assert.strictEqual(keepRealName.dash_firstName, 'Prema');
+assert.strictEqual(keepRealName.dash_gender, 'FEMALE');
+assert.strictEqual(keepRealName.dash_email, 'prema@example.com');
 
 const recaptureBeatsBooking = finalizeTelecrmStatus({
   conversionStatus: 'Session booked',
@@ -629,7 +729,8 @@ const recaptureBeatsBooking = finalizeTelecrmStatus({
   previous_capture_frequency: 1,
   nowIso: '2026-09-25T00:00:00.000Z',
 });
-assert.strictEqual(recaptureBeatsBooking.conversionStatus, 'Fresh', 'a real recapture still reopens to Fresh');
+assert.strictEqual(recaptureBeatsBooking.conversionStatus, 'Not Shown Up', 'Booked → Lead stays Not Shown Up when TeleCRM capture frequency rises');
+assert(!recaptureBeatsBooking.source.some((entry) => entry.source === 'lead_recapture'));
 
 const { leadFromMirror } = require(path.join(root, 'scripts/sync-1000-users.js'));
 const fromMirror = leadFromMirror({
@@ -700,9 +801,10 @@ for (const key of temperatureKeys) {
 assert(!Object.prototype.hasOwnProperty.call(whatsapp, 'dash_patient_id'), 'missing dashboard user must omit dash_* keys');
 assert(!Object.prototype.hasOwnProperty.call(whatsapp, 'dash_firstVisitAppointments'), 'dash_firstVisitAppointments must not be stored');
 assert(!Object.prototype.hasOwnProperty.call(whatsapp, 'lead_temperature'), 'legacy lead_temperature must not be stored');
-assert.strictEqual(whatsapp.source.length, 2, 'WF1 must coalesce matching WhatsApp and CTWA attribution');
+assert.strictEqual(whatsapp.source.length, 2, 'each dated TeleCRM capture stays in source history');
 assert.strictEqual(whatsapp.source.filter((entry) => entry.source === 'meta_ctwa').length, 2);
 assert.strictEqual(whatsapp.source[0].source, 'meta_ctwa');
+assert.ok(toMs(whatsapp.source[0].occurred_at) <= toMs(whatsapp.source[1].occurred_at), 'source history is oldest-first');
 assert.strictEqual(whatsapp.source[0].ctwa_id, 'ctwa-1');
 assert.strictEqual(whatsapp.source[0].ctwa_source, 'source-1');
 for (const entry of whatsapp.source) {
@@ -712,12 +814,14 @@ for (const entry of whatsapp.source) {
 }
 assert(!Object.prototype.hasOwnProperty.call(whatsapp, 'ctwa_id'), 'CTWA must not exist at root');
 assert(!Object.prototype.hasOwnProperty.call(whatsapp, 'final_source'), 'final_source must not exist');
-assert.strictEqual(typeof whatsapp.created_on, 'string');
-assert(!Number.isNaN(Date.parse(whatsapp.created_on)));
-assert.strictEqual(typeof whatsapp.last_synced_at, 'number');
-assert(whatsapp.last_synced_at > 1e12);
-assert.strictEqual(typeof whatsapp.created_at, 'number');
-assert.strictEqual(typeof whatsapp.modified_at, 'number');
+assert.strictEqual(typeof whatsapp.created_on_epoch, 'number');
+assert(whatsapp.created_on_epoch > 1e12);
+assert.strictEqual(whatsapp.created_at, new Date(whatsapp.created_on_epoch).toISOString());
+assert.strictEqual(typeof whatsapp.last_synced_at, 'string');
+assert(!Number.isNaN(Date.parse(whatsapp.last_synced_at)));
+assert.strictEqual(typeof whatsapp.modified_at, 'string');
+assert(!Number.isNaN(Date.parse(whatsapp.modified_at)));
+assert(!Object.prototype.hasOwnProperty.call(whatsapp, 'created_on'));
 assert.deepStrictEqual(
   whatsapp.stage.map((entry) => entry.status),
   ['Not Converted', 'Not Shown Up', 'Fresh'],
@@ -786,7 +890,7 @@ matchedValues['Aggregate Appointments'] = [{
 const matched = runBuild(wf1Code, matchedValues);
 assert.strictEqual(matched.dash_patient_id, 'user-1');
 assert.strictEqual(matched.dash_centers_id, 'center-1');
-assert.strictEqual(matched.dash_firstvisitapppointment, 'visited');
+assert.strictEqual(matched.dash_firstvisitapppointment, 'not_visited', 'PAID is not a visit');
 assert(!Object.prototype.hasOwnProperty.call(matched, 'dash_firstVisitAppointments'));
 
 const websiteValues = JSON.parse(JSON.stringify(baseValues));
@@ -822,14 +926,10 @@ websiteValues['Find Analytics View'] = [{
   },
 }];
 const website = runBuild(wf1Code, websiteValues);
-assert.strictEqual(website.source[0].source, 'website', 'Dashboard WEBSITE and TeleCRM Website both store source as website');
+assert.strictEqual(website.source[0].source, 'website', 'Dashboard WEBSITE with a UTM source stores website');
+assert.ok(toMs(website.source[0].occurred_at) <= toMs(website.source[website.source.length - 1].occurred_at), 'website source history is oldest-first');
 assertPublicSource(website.source[0]);
-assert(website.source.some((entry) => entry.source === 'google_cpc'), 'WF1 still keeps analytics UTM beside website');
-const websiteCpc = website.source.find((entry) => entry.source === 'google_cpc');
-assertPublicSource(websiteCpc);
-assert.strictEqual(websiteCpc.utm_source, 'google');
-assert.strictEqual(websiteCpc.utm_medium, 'cpc');
-assert(!Object.prototype.hasOwnProperty.call(websiteCpc, 'ctwa_id'));
+assert(!website.source.some((entry) => entry.source === 'google_cpc'), 'analytics UTM must not add a second source');
 assert(website.source.every((entry) => entry.source !== 'WEBSITE'), 'Website source label is lowercase like dash_organic');
 
 const websiteOrganicValues = JSON.parse(JSON.stringify(websiteValues));
@@ -841,9 +941,12 @@ websiteOrganicValues['Find Analytics View'] = [{
   },
 }];
 const websiteOrganic = runBuild(wf1Code, websiteOrganicValues);
-assert.strictEqual(websiteOrganic.source[0].source, 'website_organic', 'Dashboard WEBSITE with a null utmSource is website_organic');
+assert.deepStrictEqual(
+  websiteOrganic.source.map((entry) => entry.source),
+  ['website_organic', 'website'],
+  'dashboard website and the TeleCRM website capture are both kept, earliest first',
+);
 assertPublicSource(websiteOrganic.source[0]);
-assert(websiteOrganic.source.some((entry) => entry.source === 'website'), 'TeleCRM Website lead source stays website beside website_organic');
 
 const metaValues = JSON.parse(JSON.stringify(baseValues));
 metaValues['TeleCRM Search'][0].data[0].fields = {
@@ -906,11 +1009,9 @@ assert.deepStrictEqual(
   ['Fresh', 'Not Shown Up', 'Fresh', 'Not Converted', 'Not Shown Up', 'Fresh'],
   'existing join stage history is unioned with TeleCRM mirror stages, newest first',
 );
-assert.strictEqual(lifo.source[0].source, 'website', 'earliest source stays at index zero');
-assert.strictEqual(lifo.source[0].occurred_at, epoch('2026-01-01T00:00:00.000Z'));
-assert(lifo.source.some((entry) => entry.source === 'google_cpc'));
-assert(lifo.source.some((entry) => entry.source === 'website'));
-assert(lifo.source.some((entry) => entry.source === 'meta_ctwa'));
+assert.ok(lifo.source.length >= 1, 'TeleCRM capture history is stored');
+assert.strictEqual(lifo.source[0].source, 'meta_ctwa');
+assert.ok(lifo.source.every((entry) => entry.source === 'meta_ctwa'), 'stored page hits are not appended ahead of the TeleCRM capture');
 
 const sanjayValues = JSON.parse(JSON.stringify(baseValues));
 sanjayValues['Normalize Phone'] = [{ phone10: '9738761762' }];
@@ -959,8 +1060,10 @@ assert.deepStrictEqual(
   ['Not Converted', 'No Response', 'Fresh'],
   'Sanjay must keep Fresh, No Response, and Not Converted',
 );
-assert.strictEqual(sanjay.source.filter((entry) => entry.source === 'meta_ctwa').length, 1);
+assert.ok(sanjay.source.filter((entry) => entry.source === 'meta_ctwa').length >= 1);
+assert.strictEqual(sanjay.source[0].source, 'meta_ctwa');
 assert.strictEqual(sanjay.source[0].occurred_at, epoch('2026-04-24T07:47:08.418Z'));
+assert.ok(sanjay.source.every((entry, index) => index === 0 || toMs(sanjay.source[index - 1].occurred_at) <= toMs(entry.occurred_at)));
 
 const wf3Code = node(wf3, 'Build Full Document').parameters.jsCode;
 const dashboardResult = runBuild(wf3Code, {
@@ -998,7 +1101,7 @@ dashboardResult.source.forEach(assertPublicSource);
 assert.deepStrictEqual(
   dashboardResult.source.map((entry) => entry.source),
   ['meta_form', 'website'],
-  'WF3 must keep Facebook and Website lead_source events without origin fields',
+  'WF3 keeps each TeleCRM capture, oldest first',
 );
 assert.deepStrictEqual(
   dashboardResult.stage.filter((entry) => entry.platform === 'telecrm').map((entry) => entry.status),
@@ -1160,13 +1263,29 @@ assert.strictEqual(node(wf1, 'Find Analytics View').parameters.collection, 'user
 assert.deepStrictEqual(wf1.connections['Find Touchpoints'].main[0].map((edge) => edge.node), ['Find Analytics View']);
 assert.deepStrictEqual(wf1.connections['Find Analytics View'].main[0].map((edge) => edge.node), ['Build Document']);
 assert.deepStrictEqual(wf1.connections['Build Document'].main[0].map((edge) => edge.node), ['Finalize Recapture Decision']);
-assert.deepStrictEqual(wf1.connections['Finalize Recapture Decision'].main[0].map((edge) => edge.node), ['Upsert Document']);
-assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes('lead_recapture'), 'WF1 must tag lead recapture');
-assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes("'session rescheduled': 'In Pipeline'"), 'WF1 must map reschedule to In Pipeline');
-assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('lead_recapture'), 'WF3 must tag lead recapture');
-assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes('bookedDashStatuses.has(previousDash)'), 'WF1 must map Booked → Lead to In Pipeline');
+assert.deepStrictEqual(wf1.connections['Finalize Recapture Decision'].main[0].map((edge) => edge.node), ['Re-read User Status']);
+assert.deepStrictEqual(wf1.connections['Re-read User Status'].main[0].map((edge) => edge.node), ['Apply Fresh User Status']);
+assert.deepStrictEqual(wf1.connections['Apply Fresh User Status'].main[0].map((edge) => edge.node), ['Upsert Document']);
+assert(node(wf1, 'Apply Fresh User Status').parameters.jsCode.includes("freshStatus === 'LEAD'"), 'WF1 must keep Not Shown Up when the fresh user status is LEAD');
+assert(node(wf1, 'Apply Fresh User Status').parameters.jsCode.includes('applyFreshProfile'), 'WF1 must copy the fresh profile name before upsert');
+assert(node(wf1, 'Re-read User Status').parameters.query.includes('Normalize Phone'), 'WF1 re-read must use the same phone as Find User');
+assert(!node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes('tagLeadRecapture'), 'WF1 must not write lead_recapture into source');
+assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes("!== 'lead_recapture'"), 'WF1 must drop a stored lead_recapture source');
+assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes('recaptureEvent && convertedFamily'));
+assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes("desiredTelecrmStatus = 'Session booked'"), 'WF1 booked dash stays Session booked');
+assert(!node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes("? 'Session Rescheduled'"), 'WF1 must not keep Session Rescheduled while still booked');
+assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes("desiredTelecrmStatus = 'Not Shown Up'"), 'WF1 Booked → Lead is Not Shown Up');
+assert(node(wf1, 'Build Document').parameters.jsCode.includes("new Set(['VISITED'])"), 'WF1 visit flag is VISITED only');
+assert(!node(wf1, 'Build Document').parameters.jsCode.includes("'PAID', 'INVOICE_GENERATED', 'VISITED'"), 'WF1 must not treat payment as a visit');
+assert(!node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('tagLeadRecapture'), 'WF3 must not write lead_recapture into source');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes("!== 'lead_recapture'"), 'WF3 must drop a stored lead_recapture source');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('recaptureEvent && convertedFamily'));
+assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes('bookedDashStatuses.has(previousDash)'), 'WF1 must map Booked → Lead from the previous dash status');
 assert(node(wf1, 'Finalize Recapture Decision').parameters.jsCode.includes('Load Existing Doc'), 'WF1 previous dash status comes from the join row before upsert');
-assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('bookedDashStatuses.has(previousDash)'), 'WF3 must map Booked → Lead to In Pipeline');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('bookedDashStatuses.has(previousDash)'), 'WF3 must map Booked → Lead from the previous dash status');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes("desiredTelecrmStatus = 'Not Shown Up'"), 'WF3 Booked → Lead is Not Shown Up');
+assert(node(wf3, 'Build Full Document').parameters.jsCode.includes("new Set(['VISITED'])"), 'WF3 visit flag is VISITED only');
+assert(!node(wf3, 'Build Full Document').parameters.jsCode.includes("'PAID', 'INVOICE_GENERATED', 'VISITED'"), 'WF3 must not treat payment as a visit');
 assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('Load existing new-telecrm'), 'WF3 previous dash status comes from the join row before upsert');
 assert(node(wf1, 'Aggregate Appointments').parameters.query.includes('rescheduledFrom'), 'WF1 must read reschedule fields');
 assert(node(wf3, 'Aggregate Appointments').parameters.query.includes('rescheduledFrom'), 'WF3 must read reschedule fields');
@@ -1176,8 +1295,22 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   wf3.connections['Upsert Document'].main[0].map((edge) => edge.node),
+  ['Verify new-telecrm Write'],
+  'WF3 must verify the join row after Upsert',
+);
+assert.strictEqual(node(wf3, 'Upsert Document').parameters.operation, 'findOneAndReplace');
+assert.strictEqual(node(wf3, 'Upsert Document').typeVersion, 1.3);
+assert.strictEqual(node(wf3, 'Upsert Document').parameters.updateKey, 'phone');
+assert.strictEqual(node(wf3, 'Upsert Document').parameters.upsert, true);
+assert.deepStrictEqual(
+  wf3.connections['Verify new-telecrm Write'].main[0].map((edge) => edge.node),
+  ['Require new-telecrm Write'],
+  'WF3 must assert the read-after-write result',
+);
+assert.deepStrictEqual(
+  wf3.connections['Require new-telecrm Write'].main[0].map((edge) => edge.node),
   ['Remove Legacy Root CTWA', 'Lead Found in TeleCRM?'],
-  'WF3 must branch create vs update after Upsert',
+  'WF3 must branch create vs update only after write verification',
 );
 assert.deepStrictEqual(
   wf3.connections['Lead Found in TeleCRM?'].main[0].map((edge) => edge.node),
@@ -1200,6 +1333,66 @@ assert.deepStrictEqual(
 assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes("telecrm_push_mode = 'update'"));
 assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes("telecrm_push_mode = 'create'"));
 assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('should_create_telecrm'));
+assert(
+  node(wf3, 'Finalize Status Decision').parameters.jsCode.startsWith("const doc = { ...(($('Build Full Document').first().json) || {}) };"),
+  'WF3 Finalize must preserve the built join document and its phone after the profile re-read',
+);
+assert(
+  !node(wf3, 'Finalize Status Decision').parameters.jsCode.startsWith('const doc = { ...($input.first().json || {}) };'),
+  'WF3 Finalize must not replace the join document with the projected user profile',
+);
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('should_push_name'), 'WF3 pushes a real name when status did not change');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes("toLowerCase() === 'lead'"), 'WF3 must not treat the phone-verification placeholder as a person name');
+assert(node(wf3, 'Check Status & Extract').parameters.jsCode.includes('nameFieldsChanged'), 'WF3 must notice firstName/lastName updates');
+assert(node(wf3, 'Check Status & Extract').parameters.jsCode.includes("hasOwnProperty.call(modified, 'profileData')"), 'WF3 must notice a whole profileData save');
+assert(node(wf3, 'Mongo Change Trigger').parameters.operationTypes.includes('replace'), 'WF3 must watch user replace');
+assert.strictEqual(node(wf3, 'Mongo Change Trigger').parameters.database, 'stance-dashboard', 'WF3 must watch production stance-dashboard users');
+const wf3FetchUserQuery = node(wf3, 'Fetch User Doc').parameters.query;
+assert(wf3FetchUserQuery.includes('ev.documentId'), 'WF3 user lookup must accept documentId');
+assert(wf3FetchUserQuery.includes('ev.documentKey._id'), 'WF3 user lookup must accept documentKey._id');
+assert(wf3FetchUserQuery.includes('ev.fullDocument._id'), 'WF3 user lookup must accept fullDocument._id');
+assert(wf3FetchUserQuery.includes("'$toString': '$_id'"), 'WF3 user lookup must match string and ObjectId IDs');
+assert.strictEqual(node(wf3, 'Fetch User Doc').onError, undefined, 'WF3 user lookup must not swallow Mongo errors');
+assert.deepStrictEqual(
+  wf3.connections['Fetch User Doc'].main[0].map((edge) => edge.node),
+  ['Require Fetched User'],
+  'WF3 must fail loudly when no user is fetched',
+);
+assert(node(wf3, 'Require Fetched User').parameters.jsCode.includes('Fetch User Doc returned no user'));
+assert(node(wf3, 'Verify new-telecrm Write').parameters.query.includes('Finalize Status Decision'));
+assert(node(wf3, 'Verify new-telecrm Write').parameters.query.includes('Check Status & Extract'));
+assert(node(wf3, 'Verify new-telecrm Write').parameters.query.includes('input.phone'));
+assert.strictEqual(node(wf3, 'Verify new-telecrm Write').onError, undefined, 'WF3 write verification must not swallow Mongo errors');
+assert(node(wf3, 'Require new-telecrm Write').parameters.jsCode.includes('write verification failed'));
+assert(node(wf3, 'Require new-telecrm Write').parameters.jsCode.includes('extracted.phone10'));
+for (const name of [
+  'Fetch User Doc',
+  'Aggregate Appointments',
+  'Find Touchpoints',
+  'Load existing new-telecrm',
+  'Re-read User Profile',
+]) {
+  assert(!node(wf3, name).parameters.query.includes("'$limit': 0"), `WF3/${name} must use a valid empty-result pipeline`);
+}
+assert.deepStrictEqual(
+  wf3.connections['Build Full Document'].main[0].map((edge) => edge.node),
+  ['Re-read User Profile'],
+  'WF3 must re-read the user after the slow join',
+);
+assert.deepStrictEqual(
+  wf3.connections['Re-read User Profile'].main[0].map((edge) => edge.node),
+  ['Finalize Status Decision'],
+);
+assert(node(wf3, 'Re-read User Profile').parameters.query.includes('dash_patient_id'), 'WF3 profile re-read uses the joined patient id');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('applyFreshProfile'), 'WF3 must apply the fresh profile before upsert');
+assert(
+  node(wf3, 'Push Update to TeleCRM').parameters.jsonBody.includes('should_push_name'),
+  'name-only push must keep the current TeleCRM status',
+);
+assert(
+  node(wf3, 'TeleCRM Status Changed?').parameters.conditions.conditions[0].leftValue.includes('should_push_name'),
+  'update branch must run for a name push',
+);
 assert.strictEqual(wf1.connections['Success Response'], undefined, 'Success Response must not continue the workflow');
 
 assert(!wf4.nodes.some((item) => item.name === 'Update crm_sync_materialized'));
@@ -1230,12 +1423,13 @@ const sourceUpdaterResult = new Function('$', '$input', node(wf4, 'Calculate Sou
   },
 )[0].json;
 assert.strictEqual(sourceUpdaterResult.phone, '9879990466');
-assert.strictEqual(sourceUpdaterResult.source.length, 2, 'Matching WhatsApp and CTWA rows coalesce');
+assert.ok(sourceUpdaterResult.source.length >= 1, 'source history stores the TeleCRM capture');
+assert.strictEqual(sourceUpdaterResult.source[0].source, 'meta_ctwa');
 const ctwaEvent = sourceUpdaterResult.source.find((entry) => entry.source === 'meta_ctwa');
 assertPublicSource(ctwaEvent);
 assert.strictEqual(ctwaEvent.ctwa_id, 'ctwa-new');
-assert.strictEqual(sourceUpdaterResult.source[0], ctwaEvent, 'TeleCRM source bucket must be the final source');
-assert.strictEqual(sourceUpdaterResult.source.filter((entry) => entry.source === 'website').length, 1);
+assert.strictEqual(sourceUpdaterResult.source[0], ctwaEvent, 'TeleCRM capture source is the only source');
+assert.strictEqual(sourceUpdaterResult.source.filter((entry) => entry.source === 'website').length, 0);
 
 function runSourceUpdater(lead) {
   return new Function('$', '$input', node(wf4, 'Calculate Source Attribution').parameters.jsCode)(
@@ -1286,7 +1480,7 @@ const sourceCases = [
   [{ web_analytics: { utmSource: 'facebook', utmMedium: 'paid_social' } }, 'meta_paid'],
   [{ web_analytics: { utmSource: 'meta', utmMedium: 'referral' } }, 'meta_other'],
   [{ web_analytics: { utmSource: 'wesbite' } }, 'website'],
-  [{ web_analytics: { utmSource: 'unknown-network' } }, 'others'],
+  [{ web_analytics: { utmSource: 'unknown-network' } }, null],
   [{ web_analytics: { utmMedium: 'WA' } }, 'Tele_WACA'],
 ];
 for (const [input, expected] of sourceCases) {
@@ -1436,12 +1630,35 @@ const categoryWins = runSourceUpdater({
   ],
   web_analytics: { utmSource: 'google', utmMedium: 'cpc' },
 });
-assert.strictEqual(categoryWins.source[0].source, 'meta_form', 'earliest dated source stays at index 0');
+const organicCapture = runSourceUpdater({
+  phone: '9098765456',
+  user_category: 'ORGANIC',
+  user_createdAt: '2026-10-01T08:33:06.856Z',
+  lead_source: 'Website',
+  created_at: '2026-10-01T08:33:08.596Z',
+  web_analytics: { referrer: 'https://stance.health/book', utmSource: null },
+  existing_source: [
+    { source: 'dash_organic', occurred_at: '2026-10-01T08:33:06.856Z' },
+    { source: 'website', occurred_at: '2026-10-01T08:33:08.596Z' },
+    { source: 'others', occurred_at: '2026-10-01T08:33:16.617Z' },
+    { source: 'others', occurred_at: '2026-10-01T08:33:46.559Z' },
+    { source: 'lead_recapture', occurred_at: '2026-10-01T08:38:12.346Z' },
+  ],
+});
+assert.deepStrictEqual(
+  organicCapture.source.map((entry) => entry.source),
+  ['dash_organic', 'website'],
+  'dashboard category and the TeleCRM capture are kept oldest-first',
+);
+assert.deepStrictEqual(
+  categoryWins.source.map((entry) => entry.source),
+  ['meta_form', 'dash_organic'],
+  'earliest TeleCRM capture is source[0], then the later dashboard category',
+);
 assertPublicSource(categoryWins.source[0]);
-assert(categoryWins.source.some((entry) => entry.source === 'dash_organic'));
-assert(categoryWins.source.some((entry) => entry.source === 'meta_form' && entry.lead_id === '1291984475621543'));
-assert(categoryWins.source.some((entry) => entry.source === 'google_cpc' && entry.utm_source === 'google' && entry.utm_medium === 'cpc'));
-categoryWins.source.forEach(assertPublicSource);
+assert(!categoryWins.source.some((entry) => entry.source === 'google_cpc'));
+assert(!categoryWins.source.some((entry) => entry.source === 'lead_recapture'));
+assert(!categoryWins.source.some((entry) => entry.source === 'others'));
 assert.deepStrictEqual(
   sourceUpdaterResult.stage.map((entry) => entry.status),
   ['Not Converted', 'Fresh'],
@@ -1463,6 +1680,7 @@ assert.strictEqual(node(migration, 'Manual Trigger Only').type, 'n8n-nodes-base.
 assert(node(migration, 'Project Canonical Schema').parameters.query.includes('"$merge"'));
 assert(node(migration, 'Project Canonical Schema').parameters.query.includes('"campaign_id"'));
 assert(node(migration, 'Project Canonical Schema').parameters.query.includes('"occurred_at"'));
+assert(node(migration, 'Project Canonical Schema').parameters.query.includes('"$toLong"'), 'migration must store timestamps as epoch milliseconds');
 assert(node(migration, 'Project Canonical Schema').parameters.query.includes('"temperature"'));
 assert(node(migration, 'Project Canonical Schema').parameters.query.includes('dash_firstVisitAppointments'));
 

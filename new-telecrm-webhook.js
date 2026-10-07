@@ -31,7 +31,7 @@
 
 require('dotenv').config();
 const http = require('http');
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb');
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const TARGET_COLLECTION = 'new-telecrm';
@@ -56,11 +56,7 @@ const SOURCE_LABEL_MAP = {
   'Meta Lead Form': 'Perf Meta Lead Form',
 };
 
-const APPT_CONVERTED_STATUSES = new Set(['PAID', 'INVOICE_GENERATED', 'VISITED']);
-const APPT_BOOKED_STATUSES = new Set([
-  'PAID', 'INVOICE_GENERATED', 'VISITED', 'BOOKED', 'CONFIRMED',
-  'CANCELLED', 'CANCELED', 'NO_SHOW', 'NOT_SHOWN_UP',
-]);
+const APPT_CONVERTED_STATUSES = new Set(['VISITED']);
 
 let _client = null;
 let _db = null;
@@ -148,6 +144,10 @@ function normPhone10(raw) {
 
 function toEpoch(value) {
   if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
   if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
   const numeric = Number(value);
   if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;
@@ -157,11 +157,44 @@ function toEpoch(value) {
 const toMs = toEpoch;
 
 function toIso(v) {
-  if (v == null || v === '') return null;
-  const n = typeof v === 'number' ? v : Number(v);
-  if (Number.isFinite(n) && n > 1e11) return new Date(n).toISOString(); // epoch ms
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  const ms = toEpoch(v);
+  return ms == null ? null : new Date(ms).toISOString();
+}
+
+const BSON_DATE_FIELDS = [
+  'created_at',
+  'modified_at',
+  'last_synced_at',
+  'calculated_at',
+  'dash_dob',
+  'telecrm_first_interaction_date',
+  'telecrm_last_contacted_date',
+];
+
+function toBsonDate(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const ms = toEpoch(value);
+  return ms == null ? null : new Date(ms);
+}
+
+function withBsonDates(doc) {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return doc;
+  const out = { ...doc };
+  for (const key of BSON_DATE_FIELDS) {
+    if (out[key] == null || out[key] === '') continue;
+    const date = toBsonDate(out[key]);
+    if (date) out[key] = date;
+  }
+  for (const key of ['source', 'stage']) {
+    if (!Array.isArray(out[key])) continue;
+    out[key] = out[key].map((entry) => {
+      if (!entry || typeof entry !== 'object' || entry.occurred_at == null || entry.occurred_at === '') return entry;
+      const date = toBsonDate(entry.occurred_at);
+      return date ? { ...entry, occurred_at: date } : entry;
+    });
+  }
+  return out;
 }
 
 // Newest dated event first. Rows without occurred_at stay after dated rows so
@@ -216,7 +249,7 @@ function compactObj(obj) {
 
 const REQUIRED_JOIN_KEYS = new Set([
   'phone', 'conversionStatus', 'source', 'stage',
-  'created_on', 'created_at', 'modified_at', 'last_synced_at',
+  'created_on_epoch', 'created_at', 'modified_at', 'last_synced_at',
 ]);
 
 function omitEmpty(obj) {
@@ -426,7 +459,7 @@ function buildTeleCRMPart(lead, existing) {
     'telecrm_#ofCalls': pickActivityCount(lead, prev['telecrm_#ofCalls'], CALL_COUNT_KEYS),
     'telecrm_#ofmessages': pickActivityCount(lead, prev['telecrm_#ofmessages'], MESSAGE_COUNT_KEYS),
     telecrm_connected_calls: pickActivityCount(lead, prev.telecrm_connected_calls, CONNECTED_CALL_KEYS),
-    telecrm_first_interaction_date: toEpoch(firstDefined(
+    telecrm_first_interaction_date: toIso(firstDefined(
       f.first_interaction_date, f['Captured On'], f.telecrm_first_interaction_date, prev.telecrm_first_interaction_date
     )),
     telecrm_first_call_done: firstCallDoneValue(f, prev),
@@ -441,7 +474,9 @@ function buildTeleCRMPart(lead, existing) {
     telecrm_capture_frequency: tidyNumber(firstDefined(
       f.capture_frequency, f['Capture Frequency'], f['# Capture Frequency'], prev.telecrm_capture_frequency
     )),
-    created_on: firstDefined(f.created_on, f.created_at, lead && lead.createdAt, prev.created_on),
+    created_on: firstDefined(
+      f.created_on, f.created_at, lead && lead.createdAt, prev.created_on_epoch, prev.created_on
+    ),
     modified_at: firstDefined(f.modified_on, f.modified_at, lead && lead.modifiedAt, prev.modified_at),
     _sourceCategory: mapped.category,
     _leadSource: mapped.leadSource,
@@ -541,11 +576,11 @@ function sourceEvent(raw, defaults = {}) {
   const doc = { ...defaults, ...input };
   const entry = { source: sourceLabel(doc) };
   canonicalPut(entry, 'origin', firstDefined(doc.origin, doc.platform));
-  const sourceOccurredMs = toEpoch(firstDefined(
+  const sourceOccurredIso = toIso(firstDefined(
     doc.occurred_at, doc.dateISO, doc.date, doc.ts, doc.timestamp,
-    doc.created_at, doc.createdAt, doc.created_on, doc.first_seen_at
+    doc.created_at, doc.createdAt, doc.created_on, doc.created_on_epoch, doc.first_seen_at
   ));
-  if (sourceOccurredMs != null) entry.occurred_at = sourceOccurredMs;
+  if (sourceOccurredIso) entry.occurred_at = sourceOccurredIso;
   canonicalPut(entry, 'tele_leadsource', firstDefined(doc.tele_leadsource, leadSourceString(doc)));
   canonicalPut(entry, 'tele_source', firstDefined(doc.tele_source, doc.tele_source_value, doc.value));
   canonicalPut(entry, 'utm_source', firstDefined(doc.utm_source, doc.utmSource));
@@ -653,8 +688,8 @@ function mergeSourceEntries(left, right) {
   else if (rightMs != null && rightMs < leftMs) earliest = right.occurred_at;
   const merged = { source: (left && left.source) || (right && right.source) };
   canonicalPut(merged, 'origin', preferSourceOrigin(left && left.origin, right && right.origin));
-  const earliestMs = toEpoch(earliest);
-  if (earliestMs != null) merged.occurred_at = earliestMs;
+  const earliestIso = toIso(earliest);
+  if (earliestIso) merged.occurred_at = earliestIso;
   for (const key of SOURCE_EVENT_KEYS) {
     if (key === 'source' || key === 'origin' || key === 'occurred_at') continue;
     canonicalPut(merged, key, firstDefined(left && left[key], right && right[key]));
@@ -710,27 +745,88 @@ function historyArray(value) {
   if (value == null || value === '') return [];
   return [value];
 }
-function buildSourceHistory(existing, telecrm, touchpoints = [], visitor = null) {
-  const ordered = [];
-  const seen = new Set();
-  let sequence = 0;
-  function add(entry) {
-    if (!entry || canonicalBlank(entry.source)) return;
-    const fingerprint = attributionFingerprint(entry);
-    if (!fingerprint || seen.has(fingerprint)) return;
-    seen.add(fingerprint);
-    ordered.push({ entry, sequence: sequence++ });
+function categoryCaptureLabel(category, analytics) {
+  const mapped = {
+    organic: 'dash_organic',
+    advocate: 'dash_advocate',
+    advertisement: 'dash_performance',
+    referral: 'dash_customer',
+    website: 'website',
+    doctor: 'dash_consultant',
+  };
+  const label = mapped[canonicalNorm(category)] || null;
+  if (label !== 'website') return label;
+  const doc = analytics && typeof analytics === 'object' && !Array.isArray(analytics) ? analytics : null;
+  const utmSource = doc ? canonicalNorm(firstDefined(doc.utm_source, doc.utmSource, doc.first_utm_source, doc.last_utm_source)) : '';
+  return utmSource ? 'website' : 'website_organic';
+}
+function knownCaptureLabel(doc) {
+  const rawSource = typeof doc.source === 'string' ? canonicalNorm(doc.source) : '';
+  const value = canonicalNorm(firstDefined(
+    leadSourceString(doc), rawSource, doc.value, doc.tele_source, teleSourceValue(doc)
+  ));
+  if (!value) return null;
+  if (value === 'ctwa' || value === 'whatsapp cloud api' || value === 'whatsapp') return 'meta_ctwa';
+  if (value === 'facebook' || value === 'meta lead form' || value === 'meta_form') return 'meta_form';
+  if (['excel', 'manual', 'call logs', 'ivr', 'google_sheets'].includes(value)) return 'Manual';
+  if (value === 'website' || value === 'wesbite') return 'website';
+  return null;
+}
+function publishCapture(entry) {
+  if (!entry || canonicalBlank(entry.source) || canonicalNorm(entry.source) === 'lead_recapture') return null;
+  const published = {};
+  for (const key of Object.keys(entry)) {
+    if (key === 'origin' || key === 'tele_source' || key === 'tele_leadsource') continue;
+    published[key] = entry[key];
   }
-  for (const entry of sourceHistory(existing)) add(entry);
+  return published;
+}
+// Oldest capture first. source[0] is the earliest source.
+// A dashboard category is one event. Each TeleCRM capture with its own time is kept.
+// Page hits are used only when there is no category and no TeleCRM capture.
+// lead_recapture is never stored.
+function fifoSourceHistory(entries) {
+  const kept = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry || canonicalBlank(entry.source)) continue;
+    const label = canonicalNorm(entry.source);
+    if (!label || label === 'others' || label === 'lead_recapture') continue;
+    const key = label + '|' + String(toMs(entry.occurred_at) || '');
+    const index = kept.findIndex((prev) => (
+      canonicalNorm(prev.source) + '|' + String(toMs(prev.occurred_at) || '') === key
+    ));
+    if (index >= 0) kept[index] = mergeSourceEntries(kept[index], entry);
+    else kept.push(entry);
+  }
+  return kept
+    .map((entry, sequence) => ({ entry, sequence }))
+    .sort(compareHistoryOldestFirst)
+    .map((item) => item.entry);
+}
+function buildSourceHistory(existing, telecrm, touchpoints = [], visitor = null, user = null) {
+  const events = [];
+  const categoryLabel = categoryCaptureLabel(user && user.category, visitor);
+  if (categoryLabel) {
+    const entry = { source: categoryLabel };
+    const occurredIso = toIso(user && firstDefined(user.createdAt, user.updatedAt));
+    if (occurredIso) entry.occurred_at = occurredIso;
+    events.push(entry);
+  }
 
   const leadRows = Array.isArray(telecrm && telecrm.lead_source)
     ? telecrm.lead_source
     : (!canonicalBlank(telecrm && telecrm.lead_source) ? [telecrm.lead_source] : []);
   const sourceRows = historyArray(telecrm && telecrm.source);
-  const latestLead = leadSourceString(telecrm || {});
   const marketing = pickMarketingFields(telecrm || {});
   const intakeAt = facebookIntakeOccurredAt(telecrm || {});
-
+  const captured = [];
+  function consider(raw, defaults) {
+    const event = sourceEvent(raw, defaults);
+    const label = knownCaptureLabel(raw) || knownCaptureLabel({ ...defaults, ...raw });
+    if (label) event.source = label;
+    if (canonicalBlank(event.source) || canonicalNorm(event.source) === 'others' || canonicalNorm(event.source) === 'lead_recapture') return;
+    captured.push(event);
+  }
   leadRows.forEach((row, index) => {
     const raw = row && typeof row === 'object' ? row : { source: row };
     const defaults = {
@@ -742,57 +838,43 @@ function buildSourceHistory(existing, telecrm, touchpoints = [], visitor = null)
     };
     if (index === leadRows.length - 1) Object.assign(defaults, marketing, { lead_source: raw.source });
     if (canonicalNorm(raw.source) === 'facebook' && intakeAt) defaults.occurred_at = intakeAt;
-    add(sourceEvent(raw, defaults));
+    consider(raw, defaults);
   });
   sourceRows.forEach((row, index) => {
     const raw = row && typeof row === 'object' ? row : { value: row };
     const defaults = {
       origin: 'telecrm_source',
-      tele_leadsource: latestLead,
+      tele_leadsource: leadSourceString(telecrm || {}),
       tele_source_value: firstDefined(raw.value, raw.tele_source, typeof raw.source === 'string' ? raw.source : null),
     };
-    if (index === sourceRows.length - 1) {
-      Object.assign(defaults, marketing, {
-        tele_leadsource: latestLead,
-        tele_source_value: firstDefined(raw.value, raw.tele_source, typeof raw.source === 'string' ? raw.source : null),
-      });
-    }
-    if (isFacebookSourceRow(raw, latestLead) && intakeAt) defaults.occurred_at = intakeAt;
-    add(sourceEvent(raw, defaults));
+    if (index === sourceRows.length - 1) Object.assign(defaults, marketing);
+    consider(raw, defaults);
   });
-  if (!leadRows.length && !sourceRows.length && telecrm && (
-    !canonicalBlank(latestLead) || !canonicalBlank(teleSourceValue(telecrm)) || attributionSignal(telecrm)
-  )) {
-    add(sourceEvent(telecrm, { origin: 'telecrm' }));
+  for (const entry of coalesceTelecrmSourceEvents(captured)) {
+    const published = publishCapture(entry);
+    if (published) events.push(published);
   }
 
-  const webRows = (Array.isArray(touchpoints) ? touchpoints : [])
-    .filter((row) => row && typeof row === 'object' && attributionSignal(row));
-  webRows.forEach((row) => add(sourceEvent(row, { origin: 'web_touchpoint' })));
-  if (!webRows.length && visitor && attributionSignal(visitor)) {
-    add(sourceEvent({
-      ...visitor,
-      utm_source: firstDefined(visitor.first_utm_source, visitor.last_utm_source, visitor.utm_source),
-      utm_medium: firstDefined(visitor.first_utm_medium, visitor.last_utm_medium, visitor.utm_medium),
-      utm_campaign: firstDefined(visitor.first_utm_campaign, visitor.last_utm_campaign, visitor.utm_campaign),
-      referrer: firstDefined(visitor.first_referrer, visitor.last_referrer, visitor.referrer),
-      occurred_at: firstDefined(visitor.first_seen_at, visitor.createdAt),
-    }, { origin: 'web_visitor' }));
+  if (!events.length) {
+    const webRows = (Array.isArray(touchpoints) ? touchpoints : [])
+      .filter((row) => row && typeof row === 'object' && attributionSignal(row));
+    for (const row of webRows) {
+      const published = publishCapture(sourceEvent(row, { origin: 'web_touchpoint' }));
+      if (published) events.push(published);
+    }
+    if (!events.length && visitor && attributionSignal(visitor)) {
+      const published = publishCapture(sourceEvent({
+        ...visitor,
+        utm_source: firstDefined(visitor.first_utm_source, visitor.last_utm_source, visitor.utm_source),
+        utm_medium: firstDefined(visitor.first_utm_medium, visitor.last_utm_medium, visitor.utm_medium),
+        utm_campaign: firstDefined(visitor.first_utm_campaign, visitor.last_utm_campaign, visitor.utm_campaign),
+        referrer: firstDefined(visitor.first_referrer, visitor.last_referrer, visitor.referrer),
+        occurred_at: firstDefined(visitor.first_seen_at, visitor.createdAt),
+      }, { origin: 'web_visitor' }));
+      if (published) events.push(published);
+    }
   }
-
-  const merged = coalesceTelecrmSourceEvents(ordered.map((item) => item.entry));
-  return merged
-    .map((entry, idx) => ({ entry, sequence: idx }))
-    .sort(compareHistoryOldestFirst)
-    .map((item) => item.entry)
-    .map((entry) => {
-      const published = {};
-      for (const key of Object.keys(entry || {})) {
-        if (key === 'origin' || key === 'tele_source' || key === 'tele_leadsource') continue;
-        published[key] = entry[key];
-      }
-      return published;
-    });
+  return fifoSourceHistory(events);
 }
 function sameSourceArray(left, right) {
   return JSON.stringify(Array.isArray(left) ? left : []) === JSON.stringify(Array.isArray(right) ? right : []);
@@ -800,8 +882,8 @@ function sameSourceArray(left, right) {
 function stageEntry(platform, status, occurredAt) {
   if (canonicalBlank(platform) || canonicalBlank(status)) return null;
   const entry = { platform: String(platform).trim(), status: String(status).trim() };
-  const occurredMs = toEpoch(occurredAt);
-  if (occurredMs != null) entry.occurred_at = occurredMs;
+  const occurredIso = toIso(occurredAt);
+  if (occurredIso) entry.occurred_at = occurredIso;
   return entry;
 }
 function cleanStage(raw) {
@@ -909,8 +991,8 @@ function buildStageHistory(existing, telecrmRows, currentTelecrmStatus, dashStat
     if (!latestDash || canonicalNorm(latestDash.status) !== canonicalNorm(dashStatusValue)) {
       add(stageEntry('dash', dashStatus, uniqueDashOccurredAt(latestDash, dashStatusValue, dashOccurredAt)));
     } else if (!latestDash.occurred_at && dashOccurredAt) {
-      const backfillMs = toEpoch(dashOccurredAt);
-      if (backfillMs != null) latestDash.occurred_at = backfillMs;
+      const backfillIso = toIso(dashOccurredAt);
+      if (backfillIso) latestDash.occurred_at = backfillIso;
     }
   }
   return output.sort(compareHistoryNewestFirst).map((item) => item.entry);
@@ -982,9 +1064,11 @@ async function joinDashboard(db, phone10) {
   out.dash_firstName = pd.firstName || null;
   out.dash_lastName = pd.lastName || null;
   out.dash_gender = pd.gender || null;
-  out.dash_dob = pd.dob || null;
+  out.dash_dob = toIso(pd.dob) || (pd.dob ? String(pd.dob).trim() : null);
   out.dash_patientType = pd.patientType || null;
   out.dash_status = pd.status || null;
+  out._dashCategory = pd.category || null;
+  out._userCreatedAt = user.createdAt || null;
   out._dashStatusOccurredAt = firstDefined(user.updatedAt, user.createdAt) || null;
 
   // Store source-system IDs exactly as strings; names are not part of the canonical schema.
@@ -1093,43 +1177,6 @@ async function pushSourceToTeleCRM(phone10, source) {
   console.log(`[new-telecrm] source push → TeleCRM ${resp.status} (phone=${phone10}, source=${source})`);
 }
 
-function appointmentWasBooked(appt) {
-  if (!appt || typeof appt !== 'object') return false;
-  return APPT_BOOKED_STATUSES.has(String(appt.status || '').toUpperCase());
-}
-
-function hasPastAppointment(appts) {
-  return (Array.isArray(appts) ? appts : []).some(appointmentWasBooked);
-}
-
-function isRescheduledAppointment(appt) {
-  if (!appt || typeof appt !== 'object') return false;
-  if (Array.isArray(appt.rescheduledFrom) && appt.rescheduledFrom.length) return true;
-  if (appt.rescheduledTo) return true;
-  if (String(appt.cancellationReason || '').toUpperCase().includes('RESCHEDUL')) return true;
-  const details = appt.cancellationDetails && typeof appt.cancellationDetails === 'object'
-    ? appt.cancellationDetails
-    : {};
-  return Boolean(details.rescheduledToId || details.rescheduledOnSameDay === true);
-}
-
-function hasRescheduledAppointment(appts) {
-  return (Array.isArray(appts) ? appts : []).some(isRescheduledAppointment);
-}
-
-function inboundFromAnyPlatform(sources) {
-  const rows = Array.isArray(sources) ? sources : [];
-  for (const row of rows) {
-    const label = String(row && row.source ? row.source : '').trim();
-    if (!label) continue;
-    const lower = label.toLowerCase();
-    if (lower.startsWith('dash_')) continue;
-    if (lower === 'lead_recapture') continue;
-    return true;
-  }
-  return false;
-}
-
 function canonicalTelecrmStatus(raw) {
   const key = String(raw || '').trim().toLowerCase();
   const map = {
@@ -1155,37 +1202,15 @@ function telecrmStageHistory(stages) {
   return out;
 }
 
-function previousNonFreshStatus(stages) {
-  const rows = Array.isArray(stages) ? stages : [];
-  for (const row of rows) {
-    if (String(row && row.platform ? row.platform : '').toLowerCase() !== 'telecrm') continue;
-    const mapped = canonicalTelecrmStatus(row.status);
-    if (mapped && mapped !== 'Fresh') return mapped;
-  }
-  return null;
-}
-
-function tagLeadRecapture(sources, occurredAt) {
-  const rows = Array.isArray(sources) ? sources.slice() : [];
-  if (rows.some((row) => String(row && row.source ? row.source : '').toLowerCase() === 'lead_recapture')) {
-    return rows;
-  }
-  rows.push({ source: 'lead_recapture', occurred_at: occurredAt || new Date().toISOString() });
-  return rows;
-}
-
 function finalizeTelecrmStatus(input) {
   const doc = input && typeof input === 'object' ? input : {};
   const normalize = (value) => String(value == null ? '' : value).trim().toLowerCase();
   const upper = (value) => String(value == null ? '' : value).trim().toUpperCase();
   const current = firstDefined(doc.currentTelecrmStatus, doc.telecrm_previous_status, doc.conversionStatus);
   const dashStatus = upper(doc.dash_status);
-  const paidVisit = normalize(doc.dash_firstvisitapppointment) === 'visited';
   const appts = Array.isArray(doc.appointments) ? doc.appointments : [];
-  const pastAppointment = hasPastAppointment(appts);
-  const rescheduled = hasRescheduledAppointment(appts);
-  const inbound = inboundFromAnyPlatform(doc.source);
-  const prior = previousNonFreshStatus(doc.stage);
+  const actuallyVisited = normalize(doc.dash_firstvisitapppointment) === 'visited'
+    || appts.some((appt) => String(appt && appt.status || '').trim().toUpperCase() === 'VISITED');
   const history = telecrmStageHistory(doc.stage);
   const reopenedFresh = normalize(current) === 'fresh' && history.some((entry) => entry !== 'Fresh');
   const countOrNaN = (value) => (value === null || value === undefined || value === '' ? NaN : Number(value));
@@ -1199,9 +1224,6 @@ function finalizeTelecrmStatus(input) {
   // Only a capture *event* may reopen a stage. source[] keeps website forever, so it
   // cannot gate the push: every sync would otherwise re-push Fresh.
   const recaptureEvent = capturedAgain || reopenedFresh;
-  // Same gate as n8n Finalize Recapture / Finalize Status: a known lead, captured again.
-  const statusRecapture = history.length > 0 && recaptureEvent;
-  const recapture = pastAppointment && (inbound || (normalize(current) === 'fresh' && !!prior));
   const convertedDash = new Set(['ACTIVE', 'PACKAGE', 'PACKAGE_EXPIRED', 'DISCHARGED', 'INACTIVE']);
   const bookedDash = new Set(['BOOKED', 'BOOKED_WITH_TOKEN', 'BOOKED_WITHOUT_TOKEN']);
   const leadStatuses = {
@@ -1212,11 +1234,12 @@ function finalizeTelecrmStatus(input) {
     'not converted': 'Not Converted',
   };
   const recaptureOpen = new Set(['fresh', 'no response', 'in pipeline', 'session booked', 'session rescheduled']);
-  // Converted is the one stage lead recapture must not reopen. The last clause catches
-  // TeleCRM's own Lead Recapture (token set to Once a Day) resetting a Converted lead to Fresh.
-  const convertedFamily = normalize(current) === 'converted'
-    || convertedDash.has(dashStatus)
-    || paidVisit
+  // Converted means a real visit or a dashboard lifecycle status, not a token payment.
+  // The last clause catches TeleCRM's own Lead Recapture resetting a Converted lead to Fresh.
+  // A stored Converted value does not win while the patient is still booked, or has just
+  // returned from booked to LEAD, unless they actually visited.
+  const convertedFamily = convertedDash.has(dashStatus)
+    || actuallyVisited
     || (reopenedFresh && history.includes('Converted'));
 
   let desired = canonicalTelecrmStatus(doc.conversionStatus) || canonicalTelecrmStatus(current);
@@ -1225,36 +1248,33 @@ function finalizeTelecrmStatus(input) {
   if (convertedFamily) {
     desired = 'Converted';
     if (recaptureOpen.has(normalize(current))) {
-      healReason = paidVisit && !convertedDash.has(dashStatus)
-        ? 'paid_visit_recapture_heal'
+      healReason = actuallyVisited && !convertedDash.has(dashStatus)
+        ? 'visited_recapture_heal'
         : 'converted_dash_recapture_heal';
     }
-  } else if (statusRecapture) {
-    desired = 'Fresh';
-    if (normalize(current) !== 'fresh') healReason = 'lead_recapture_fresh';
-  } else if (rescheduled) {
-    desired = 'In Pipeline';
-    if (normalize(current) !== 'in pipeline') healReason = 'reschedule_in_pipeline';
   } else if (bookedDash.has(dashStatus)) {
     desired = 'Session booked';
   } else if (dashStatus === 'LEAD' && bookedDash.has(upper(doc.previous_dash_status))) {
     // Only the Booked → Lead transition. A lead that was never booked stays on the fallback below.
-    desired = 'In Pipeline';
-    if (normalize(current) !== 'in pipeline') healReason = 'booked_to_lead';
+    desired = 'Not Shown Up';
+    if (normalize(current) !== 'not shown up') healReason = 'booked_to_lead';
+  } else if (normalize(current) === 'converted') {
+    desired = 'Converted';
   } else if (dashStatus === 'LEAD') {
     desired = leadStatuses[normalize(current)] || 'Fresh';
   }
 
-  const nowIso = doc.nowIso || new Date().toISOString();
-  let source = Array.isArray(doc.source) ? doc.source.slice() : [];
-  if (recapture) source = tagLeadRecapture(source, nowIso);
+  const nowMs = toEpoch(doc.nowIso) || Date.now();
+  // TeleCRM owns lead recapture. Do not store that label on the Mongo source.
+  let source = (Array.isArray(doc.source) ? doc.source : [])
+    .filter((row) => normalize(row && row.source) !== 'lead_recapture');
 
   const stage = Array.isArray(doc.stage) ? doc.stage.slice() : [];
   const shouldPush = Boolean(desired) && normalize(current) !== normalize(desired);
   if (shouldPush && desired) {
     const latestTele = stage.find((row) => normalize(row && row.platform) === 'telecrm');
     if (!latestTele || normalize(latestTele.status) !== normalize(desired)) {
-      stage.unshift({ platform: 'telecrm', status: desired, occurred_at: nowIso });
+      stage.unshift({ platform: 'telecrm', status: desired, occurred_at: toIso(nowMs) });
     }
   }
 
@@ -1264,10 +1284,44 @@ function finalizeTelecrmStatus(input) {
     stage,
     should_push_telecrm: shouldPush,
     recapture_heal_reason: healReason,
-    is_lead_recapture: recapture,
+    is_lead_recapture: false,
     // A recapture may push without a dashboard status change; that is the only way a
     // TeleCRM-side reset of a Converted lead gets corrected.
-    recapture_push: shouldPush && recaptureEvent && (convertedFamily || statusRecapture),
+    recapture_push: shouldPush && recaptureEvent && convertedFamily,
+  };
+}
+
+// A sync that loaded BOOKED_* can finish after the user is already LEAD and
+// would otherwise write Session booked over the Not Shown Up push.
+function applyFreshDashStatus(doc, freshStatus, nowMs) {
+  const upper = (value) => String(value == null ? '' : value).trim().toUpperCase();
+  const norm = (value) => String(value == null ? '' : value).trim().toLowerCase();
+  const booked = new Set(['BOOKED', 'BOOKED_WITH_TOKEN', 'BOOKED_WITHOUT_TOKEN']);
+  const loaded = upper(doc && doc.dash_status);
+  if (upper(freshStatus) !== 'LEAD' || !booked.has(loaded)) {
+    return { doc, suppressed: false };
+  }
+  const at = toIso(nowMs || Date.now());
+  const stage = Array.isArray(doc.stage) ? doc.stage.slice() : [];
+  const latestDash = stage.find((row) => norm(row && row.platform) === 'dash');
+  if (!latestDash || norm(latestDash.status) !== 'lead') {
+    stage.unshift({ platform: 'dash', status: 'LEAD', occurred_at: at });
+  }
+  const latestTele = stage.find((row) => norm(row && row.platform) === 'telecrm');
+  if (!latestTele || norm(latestTele.status) !== 'not shown up') {
+    stage.unshift({ platform: 'telecrm', status: 'Not Shown Up', occurred_at: at });
+  }
+  return {
+    suppressed: true,
+    doc: {
+      ...doc,
+      dash_status: 'LEAD',
+      conversionStatus: 'Not Shown Up',
+      should_push_telecrm: false,
+      stage,
+      modified_at: at,
+      last_synced_at: at,
+    },
   };
 }
 
@@ -1276,6 +1330,45 @@ function phoneForTelecrmUpdate(raw) {
   if (s.length === 12 && s.startsWith('91')) s = s.slice(2);
   if (s.length === 11 && s.startsWith('0')) s = s.slice(1);
   return s.length === 10 ? s : '';
+}
+
+// Phone-verification creates the Stance user as firstName "Lead". That word is not a person.
+function realPersonName(value) {
+  const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  if (!text || text.toLowerCase() === 'lead') return '';
+  if (text.split(' ').every((word) => word.toLowerCase() === 'lead')) return '';
+  return text;
+}
+
+// The insert sync loads the user before the booking form is saved, then upserts
+// minutes later. Copy the profile from a read taken immediately before that write.
+// A stub named Lead must not replace a real name already stored for this phone.
+function applyFreshProfile(doc, freshUser, existing) {
+  const base = doc && typeof doc === 'object' ? { ...doc } : {};
+  const previous = existing && typeof existing === 'object' ? existing : {};
+  const user = freshUser && typeof freshUser === 'object' ? freshUser : null;
+  const pd = user && user.profileData && typeof user.profileData === 'object' ? user.profileData : null;
+  if (!pd) return base;
+  const freshPerson = realPersonName([pd.firstName, pd.lastName].filter(Boolean).join(' '));
+  const existingPerson = realPersonName(previous.name);
+  if (!freshPerson && existingPerson) {
+    base.name = existingPerson;
+    for (const key of ['dash_firstName', 'dash_lastName', 'dash_gender', 'dash_email', 'dash_dob']) {
+      if (previous[key] != null && String(previous[key]).trim() !== '') base[key] = previous[key];
+    }
+    return base;
+  }
+  if (pd.firstName) base.dash_firstName = pd.firstName;
+  if (pd.lastName) base.dash_lastName = pd.lastName;
+  if (freshPerson) base.name = freshPerson;
+  else {
+    const joined = [pd.firstName, pd.lastName].filter(Boolean).join(' ');
+    if (joined) base.name = joined;
+  }
+  if (pd.gender) base.dash_gender = pd.gender;
+  if (user.email) base.dash_email = user.email;
+  if (pd.dob != null && pd.dob !== '') base.dash_dob = toIso(pd.dob) || String(pd.dob).trim();
+  return base;
 }
 
 // Updates the lead already stored under this phone. Does not prefix 91:
@@ -1380,6 +1473,8 @@ async function syncOne(rawPhone, options = {}) {
   const dEntry = dash._dashEntry; delete dash._dashEntry;
   const touchpoints = dash._touchpoints || []; delete dash._touchpoints;
   const webVisitor = dash._webVisitor || null; delete dash._webVisitor;
+  const dashCategory = dash._dashCategory || null; delete dash._dashCategory;
+  const userCreatedAt = dash._userCreatedAt || null; delete dash._userCreatedAt;
   const dashOccurredAt = dash._dashStatusOccurredAt; delete dash._dashStatusOccurredAt;
   const telStatus = tel._telecrmStatus; delete tel._telecrmStatus;
 
@@ -1389,7 +1484,10 @@ async function syncOne(rawPhone, options = {}) {
   if (Array.isArray(mirror.lead_source) && mirror.lead_source.length) fields.lead_source = mirror.lead_source;
   if (Array.isArray(mirror.source) && mirror.source.length) fields.source = mirror.source;
   if (Array.isArray(mirror.stage) && mirror.stage.length) fields.stage = mirror.stage;
-  const srcArr = buildSourceHistory(existing, fields, touchpoints, webVisitor);
+  const srcArr = buildSourceHistory(existing, fields, touchpoints, webVisitor, {
+    category: dashCategory,
+    createdAt: userCreatedAt,
+  });
 
   const stageArrRaw = buildStageHistory(existing, fields.stage, telStatus, dash.dash_status, dashOccurredAt, new Date().toISOString());
   const createdEpoch = toEpoch(tel.created_on);
@@ -1439,32 +1537,76 @@ async function syncOne(rawPhone, options = {}) {
     telecrm_capture_frequency: tel.telecrm_capture_frequency,
     source: srcArrFinal,
     stage: stageArr,
-    created_on: toIso(createdEpoch),
-    created_at: createdEpoch,
-    modified_at: toEpoch(tel.modified_at) || toEpoch(nowIso),
-    last_synced_at: toEpoch(nowIso),
+    created_on_epoch: createdEpoch,
+    created_at: toIso(createdEpoch),
+    modified_at: toIso(tel.modified_at) || toIso(nowIso),
+    last_synced_at: toIso(nowIso),
     temperature: preservedTemperature ?? null,
-    calculated_at: preservedCalculatedAt ?? null,
+    calculated_at: toIso(preservedCalculatedAt),
     temperature_derived: normalizeTemperatureDerived(existing.temperature_derived),
   });
+
+  let stored = doc;
+  let staleBookedSuppressed = false;
+  if (dash.dash_patient_id && ObjectId.isValid(String(dash.dash_patient_id))) {
+    const freshUser = await db.collection('users').findOne(
+      { _id: new ObjectId(String(dash.dash_patient_id)) },
+      { projection: {
+        email: 1,
+        'profileData.status': 1,
+        'profileData.firstName': 1,
+        'profileData.lastName': 1,
+        'profileData.gender': 1,
+        'profileData.dob': 1,
+      } },
+    );
+    stored = applyFreshProfile(stored, freshUser, existing);
+    const freshStatus = freshUser && freshUser.profileData && freshUser.profileData.status;
+    const applied = applyFreshDashStatus(stored, freshStatus, Date.now());
+    stored = applied.doc;
+    staleBookedSuppressed = applied.suppressed;
+    delete stored.should_push_telecrm;
+  }
+
+  const dashboardName = realPersonName(stored.name);
+  const crmNameIsPlaceholder = !realPersonName(tel.name);
+  const nameNeedsPush = Boolean(dashboardName)
+    && dashboardName.toLowerCase() !== String(tel.name || '').trim().toLowerCase()
+    && crmNameIsPlaceholder;
+  if (nameNeedsPush) stored.name = dashboardName;
+  stored = withBsonDates(stored);
 
   await step.run(`Upsert into ${TARGET_COLLECTION}`, async () => {
     const r = await db.collection(TARGET_COLLECTION).replaceOne(
       { phone: phone10 },
-      doc,
+      stored,
       { upsert: true },
     );
     return { __note: r.upsertedCount ? 'inserted new doc' : 'updated existing doc' };
   });
 
   const dashStatusChanged = String((existing && existing.dash_status) || '') !== String((dash && dash.dash_status) || '');
-  if (decision.should_push_telecrm && decision.conversionStatus && mirror && mirror.phone
-    && (dashStatusChanged || decision.recapture_push)) {
+  const statusPush = !staleBookedSuppressed && decision.should_push_telecrm && decision.conversionStatus && mirror && mirror.phone
+    && (dashStatusChanged || decision.recapture_push);
+  if (statusPush) {
     await step.run('Push healed TeleCRM status', async () => {
-      const result = await pushStatusToTeleCRM(phone10, decision.conversionStatus, tel.name, mirror.phone);
+      const result = await pushStatusToTeleCRM(
+        phone10,
+        decision.conversionStatus,
+        nameNeedsPush ? dashboardName : tel.name,
+        mirror.phone,
+      );
       const note = result.skipped
         ? `skipped (${result.reason || 'no async token'})`
         : `heal ${decision.recapture_heal_reason || decision.conversionStatus} → ${result.http}`;
+      return { __note: note };
+    });
+  } else if (nameNeedsPush && mirror && mirror.phone && tel.conversionStatus) {
+    await step.run('Push updated name to TeleCRM', async () => {
+      const result = await pushStatusToTeleCRM(phone10, tel.conversionStatus, dashboardName, mirror.phone);
+      const note = result.skipped
+        ? `skipped (${result.reason || 'no async token'})`
+        : `name → ${result.http}`;
       return { __note: note };
     });
   }
@@ -1483,11 +1625,12 @@ async function syncOne(rawPhone, options = {}) {
   const ms = Date.now() - t0;
   const yn = (v) => (v ? `${C.green}yes${C.reset}` : `${C.gray}no${C.reset}`);
   const latestSource = srcArr.length ? (srcArr[0].source || srcArr[0].utmSource || '—') : '—';
-  const lastTel = stageArr.find(s => s.platform === 'telecrm');
-  const lastDash = stageArr.find(s => s.platform === 'dash');
-  console.log(`  ${C.magenta}│${C.reset} ${C.bold}${doc.name || '—'}${C.reset}  ${C.gray}(${isNew ? 'new lead' : 'existing lead'})${C.reset}`);
+  const loggedStage = stored.stage || stageArr;
+  const lastTel = loggedStage.find(s => s.platform === 'telecrm');
+  const lastDash = loggedStage.find(s => s.platform === 'dash');
+  console.log(`  ${C.magenta}│${C.reset} ${C.bold}${stored.name || '—'}${C.reset}  ${C.gray}(${isNew ? 'new lead' : 'existing lead'})${C.reset}`);
   console.log(`  ${C.magenta}│${C.reset} source     ${C.cyan}${latestSource}${C.reset}   temp ${doc.temperature || '—'}`);
-  console.log(`  ${C.magenta}│${C.reset} stage[]    telecrm ${C.cyan}${(lastTel && lastTel.status) || '—'}${C.reset} · dash ${C.cyan}${(lastDash && lastDash.status) || '—'}${C.reset}  ${C.gray}(${stageArr.length} entries)${C.reset}`);
+  console.log(`  ${C.magenta}│${C.reset} stage[]    telecrm ${C.cyan}${(lastTel && lastTel.status) || '—'}${C.reset} · dash ${C.cyan}${(lastDash && lastDash.status) || '—'}${C.reset}  ${C.gray}(${loggedStage.length} entries)${C.reset}`);
   console.log(`  ${C.magenta}│${C.reset} dashboard  user ${yn(matched.user)} · appts ${matched.appointments || 0} · webAnalytics ${yn(matched.webVisitor)}`);
   console.log(`  ${C.magenta}│${C.reset} dashboard  first visit ${C.cyan}${doc.dash_firstvisitapppointment || '—'}${C.reset}`);
   console.log(`${C.blue}${C.bold}└─ ${C.green}✓ done${C.reset} ${C.gray}in ${ms}ms · ${telNote} · ${dashNote}${C.reset}\n`);
@@ -1566,5 +1709,6 @@ module.exports = {
   syncOne, buildTeleCRMPart, mapSourceCategory, joinDashboard,
   buildSourceHistory, buildStageHistory, toEpoch, toMs, bar,
   resolveFinalUserStatus, getDb, normPhone10, TARGET_COLLECTION, C, now,
-  omitEmpty, finalizeTelecrmStatus,
+  omitEmpty, finalizeTelecrmStatus, applyFreshDashStatus, applyFreshProfile, realPersonName,
+  toBsonDate, withBsonDates,
 };
