@@ -1,0 +1,7 @@
+{
+  "MongoUri": "",
+  "MongoDb": "stance-dashboard",
+  "TelecrmEnterpriseId": "",
+  "TelecrmSyncToken": "",
+  "TelecrmAsyncToken": ""
+}

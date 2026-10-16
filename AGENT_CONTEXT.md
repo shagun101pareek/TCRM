@@ -281,7 +281,7 @@ Do not invent a test suite unless a human asks.
 - Sync `isConverted` / `hasVisitedSession` = first-visit + `isFirstAssessment` + `{PAID, INVOICE_GENERATED, VISITED}`. WF3 uses different definitions (`ACTIVE`/`PACKAGE`, and `COMPLETED`/`attended`). Last writer wins; field **shapes** also differ (`dash_centers`, `dash_firstvisitapppointment`).
 - `resolveFinalUserStatus` exists in JS but the upsert **`$unset`s `final_user_status`**.
 - Reconcile only heals TeleCRM **Fresh**.
-- Temperature jobs score every TeleCRM stage (including Session booked and Converted) and POST `{phone, status, temperature}` on `autoupdatelead`. Temperature-only POSTs reopen the lead to Fresh.
+- Temperature jobs score every open TeleCRM stage (including Session booked) and POST `{phone, status, temperature}` on `autoupdatelead`. Converted and Not Converted are not scored and are not pushed. Temperature-only POSTs reopen the lead to Fresh.
 - Duplicate Stance users: JS prefers `web_visitors.patient_id`, else latest `updatedAt`. n8n uses `findOne` (arbitrary).
 - Multiple TeleCRM leads for one phone: always `data[0]`.
 - `NEW_TELECRM_PUSH_SOURCE` default **off**.

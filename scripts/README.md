@@ -70,6 +70,10 @@ Reads Mongo only unless you pass `--apply`. Loads `.env` with Node stdlib (the `
 
 Reads Mongo only unless you pass `--apply`. Defaults to database `stance-development` and `--from-mirror`. Refuses `--apply` when `new-telecrm` is empty (wrong-cluster guard) or when the database is not `stance-development`. Production uses `--db stance-dashboard --uri-env MONGODB_URI_PRODUCTION --allow-other-db --allow-empty-target`. Existing join rows are refreshed; missing phones are inserted. `--skip` resumes after a partial run. `--phone` retries one 10-digit number. Progress is `.agent/backfill-new-telecrm-progress.json` for development and `.agent/backfill-new-telecrm-progress-<db>.json` otherwise. Refuses to run if `NEW_TELECRM_PUSH_SOURCE` is on.
 
+### push-earliest-source.js
+
+Reads Mongo unless you pass `--apply`. Compares `new-telecrm` `source[0].source` with the `telecrm` mirror dropdown and prints phones that differ. `--apply` posts `{ phone, source }` only (10-digit phone, no status). Empty `source[]` is skipped. An exact match is skipped. Does not call `syncOne` and does not set `NEW_TELECRM_PUSH_SOURCE`. Defaults to `stance-dashboard` via `MONGODB_URI_PRODUCTION` when that key exists.
+
 ### start-mcp.js
 
 Thin wrapper around `mcp/server/index.js`. MCP clients should usually spawn the server file directly (see `MCP.md`).

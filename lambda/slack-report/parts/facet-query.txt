@@ -1,0 +1,172 @@
+=[{"$set":{"stage":{"$map":{"input":{"$cond":[{"$eq":[{"$type":"$stage"},"array"]},"$stage",[]]},"as":"s","in":{"$let":{"vars":{"ms":{"$let":{"vars":{"raw":"$$s.occurred_at"},"in":{"$switch":{"branches":[{"case":{"$in":[{"$type":"$$raw"},["missing","null"]]},"then":null},{"case":{"$eq":[{"$type":"$$raw"},"date"]},"then":{"$toLong":"$$raw"}},{"case":{"$in":[{"$type":"$$raw"},["int","long","double","decimal"]]},"then":{"$cond":[{"$and":[{"$gte":["$$raw",0]},{"$lt":["$$raw",1000000000000]}]},{"$toLong":{"$multiply":["$$raw",1000]}},{"$toLong":"$$raw"}]}},{"case":{"$eq":[{"$type":"$$raw"},"string"]},"then":{"$let":{"vars":{"asDate":{"$convert":{"input":"$$raw","to":"date","onError":null,"onNull":null}},"asNum":{"$convert":{"input":"$$raw","to":"double","onError":null,"onNull":null}}},"in":{"$cond":[{"$ne":["$$asNum",null]},{"$cond":[{"$and":[{"$gte":["$$asNum",0]},{"$lt":["$$asNum",1000000000000]}]},{"$toLong":{"$multiply":["$$asNum",1000]}},{"$toLong":"$$asNum"}]},{"$convert":{"input":"$$asDate","to":"long","onError":null,"onNull":null}}]}}}}],"default":null}}}}},"in":{"$cond":[{"$eq":["$$ms",null]},"$$s",{"$mergeObjects":["$$s",{"occurred_at":"$$ms"}]}]}}}}}}},
+  { "$facet": {
+    "new_leads": [
+  { "$match": { "$or": [ { "$expr": { "$and": [ { "$eq": [ { "$type": "$created_at" }, "date" ] }, { "$gte": [ { "$toLong": "$created_at" }, {{ $('Calculate Windows1').item.json.start_ms }} ] }, { "$lt": [ { "$toLong": "$created_at" }, {{ $('Calculate Windows1').item.json.end_ms }} ] } ] } }, { "created_at": { "$gte": {{ $('Calculate Windows1').item.json.start_utc_iso }}, "$lt": {{ $('Calculate Windows1').item.json.end_utc_iso }} } }, { "created_on_epoch": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } }, { "created_on": { "$gte": {{ $('Calculate Windows1').item.json.start_utc_iso }}, "$lt": {{ $('Calculate Windows1').item.json.end_utc_iso }} } }, { "created_on": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } },
+  { "$project": {
+    "conversionStatus": 1, "status": "$conversionStatus",
+    "created_on_epoch": 1, "created_on": 1, "created_at": 1,
+    "phone": 1, "name": 1,
+    "telecrm_form_branch": 1, "branch": "$telecrm_form_branch",
+    "telecrm_first_interaction_date": 1, "source": 1,
+    "stage": { "$filter": { "input": { "$ifNull": ["$stage", []] }, "as": "e", "cond": { "$and": [ { "$eq": [ { "$ifNull": ["$e.platform", "telecrm"] }, "telecrm" ] }, { "$in": ["$e.status", ["No Response", "In Pipeline", "Session Booked", "Session booked", "Session Rescheduled", "Not Converted", "Converted", "Won / Converted", "No Show", "Not Shown Up"]] } ] } } }
+  } },
+  { "$limit": 5000 }
+],
+    "older_leads": [
+  { "$match": {
+    "$or": [ { "$expr": { "$and": [ { "$eq": [ { "$type": "$created_at" }, "date" ] }, { "$lt": [ { "$toLong": "$created_at" }, {{ $('Calculate Windows1').item.json.start_ms }} ] } ] } }, { "created_at": { "$lt": {{ $('Calculate Windows1').item.json.start_utc_iso }}, "$type": "string" } }, { "created_on_epoch": { "$lt": {{ $('Calculate Windows1').item.json.start_ms }}, "$type": "number" } }, { "created_on": { "$lt": {{ $('Calculate Windows1').item.json.start_utc_iso }}, "$type": "string" } }, { "created_on": { "$lt": {{ $('Calculate Windows1').item.json.start_ms }}, "$type": "number" } } ],
+    "stage": { "$elemMatch": { "$and": [ { "$or": [ { "platform": "telecrm" }, { "platform": null } ] }, { "status": { "$in": ["No Response", "In Pipeline", "Session Booked", "Session booked", "Session Rescheduled", "Not Converted", "Converted", "Won / Converted", "No Show", "Not Shown Up"] } }, { "$or": [ { "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ] }, { "$and": [ { "$or": [ { "occurred_at": null }, { "occurred_at": "" }, { "occurred_at": { "$exists": false } } ] }, { "date": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } } ] } ] } ] } }
+  } },
+  { "$project": {
+    "conversionStatus": 1, "status": "$conversionStatus",
+    "created_on_epoch": 1, "created_on": 1, "created_at": 1,
+    "phone": 1, "name": 1,
+    "telecrm_form_branch": 1, "branch": "$telecrm_form_branch",
+    "telecrm_first_interaction_date": 1, "source": 1,
+    "stage": { "$filter": { "input": { "$ifNull": ["$stage", []] }, "as": "e", "cond": { "$and": [ { "$eq": [ { "$ifNull": ["$e.platform", "telecrm"] }, "telecrm" ] }, { "$in": ["$e.status", ["No Response", "In Pipeline", "Session Booked", "Session booked", "Session Rescheduled", "Not Converted", "Converted", "Won / Converted", "No Show", "Not Shown Up"]] } ] } } }
+  } },
+  { "$limit": 5000 }
+],
+    "older_stage": [
+  { "$match": { "$or": [ { "$expr": { "$and": [ { "$eq": [ { "$type": "$created_at" }, "date" ] }, { "$lt": [ { "$toLong": "$created_at" }, {{ $('Calculate Windows1').item.json.start_ms }} ] } ] } }, { "created_at": { "$lt": {{ $('Calculate Windows1').item.json.start_utc_iso }}, "$type": "string" } }, { "created_on_epoch": { "$lt": {{ $('Calculate Windows1').item.json.start_ms }}, "$type": "number" } }, { "created_on": { "$lt": {{ $('Calculate Windows1').item.json.start_utc_iso }}, "$type": "string" } }, { "created_on": { "$lt": {{ $('Calculate Windows1').item.json.start_ms }}, "$type": "number" } } ], "stage": { "$elemMatch": { "$and": [ { "$or": [ { "platform": "telecrm" }, { "platform": null } ] }, { "$or": [ { "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ] }, { "$and": [ { "$or": [ { "occurred_at": null }, { "occurred_at": "" }, { "occurred_at": { "$exists": false } } ] }, { "date": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } } ] } ] } ] } } } },
+  { "$project": {
+    "conversionStatus": 1, "status": "$conversionStatus",
+    "created_on_epoch": 1, "created_on": 1, "created_at": 1, "source": 1, "name": 1, "phone": 1,
+    "telecrm_form_branch": 1, "branch": "$telecrm_form_branch",
+    "telecrm_first_interaction_date": 1,
+    "stage": { "$filter": { "input": { "$ifNull": ["$stage", []] }, "as": "e", "cond": { "$and": [ { "$eq": [ { "$ifNull": ["$e.platform", "telecrm"] }, "telecrm" ] }, { "$or": [ { "$and": [ { "$gte": ["$e.occurred_at", "{{ $('Calculate Windows1').item.json.iso_date }}"] }, { "$lt": ["$e.occurred_at", "{{ $('Calculate Windows1').item.json.iso_date_next }}"] } ] }, { "$and": [ { "$gte": ["$e.occurred_at", {{ $('Calculate Windows1').item.json.start_ms }}] }, { "$lt": ["$e.occurred_at", {{ $('Calculate Windows1').item.json.end_ms }}] } ] }, { "$and": [ { "$in": [ { "$ifNull": ["$e.occurred_at", ""] }, [null, ""] ] }, { "$gte": ["$e.date", "{{ $('Calculate Windows1').item.json.iso_date }}"] }, { "$lt": ["$e.date", "{{ $('Calculate Windows1').item.json.iso_date_next }}"] } ] } ] } ] } } }
+  } },
+  { "$limit": 5000 }
+],
+    "status_counts": [
+  { "$group": { "_id": "$conversionStatus", "count": { "$sum": 1 } } }
+],
+    "plat_stats": [
+  { "$match": { "stage": { "$elemMatch": { "platform": "telecrm", "status": "Not Converted", "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } } } },
+  { "$group": { "_id": { "$let": {
+        "vars": {
+          "lastSrc": {
+            "$reduce": {
+              "input": { "$ifNull": ["$source", []] },
+              "initialValue": "Unknown",
+              "in": { "$cond": [
+                { "$and": [ { "$ne": ["$this.source", null] }, { "$ne": ["$this.source", ""] } ] },
+                "$this.source",
+                "$value"
+              ] }
+            }
+          }
+        },
+        "in": "$lastSrc"
+      } }, "count": { "$sum": 1 } } },
+  { "$sort": { "count": -1 } }
+],
+    "sessions": [
+  { "$match": {
+    "stage": { "$elemMatch": {
+      "platform": "telecrm",
+      "status": { "$in": ["Converted","Won / Converted","No Show","Not Shown Up"] },
+      "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ]
+    } }
+  } },
+  { "$project": {
+      "_id": 0,
+      "phone": 1, "name": 1,
+      "telecrm_form_branch": 1, "branch": "$telecrm_form_branch",
+      "source": 1, "conversionStatus": 1, "status": "$conversionStatus",
+      "stage": { "$filter": { "input": { "$ifNull": ["$stage", []] }, "as": "e", "cond": { "$eq": ["$e.platform", "telecrm"] } } },
+      "created_on_epoch": 1, "created_on": 1, "created_at": 1
+  } }
+],
+    "temperature": [
+  { "$project": {
+    "conversionStatus": 1,
+    "teleStages": { "$filter": { "input": { "$ifNull": ["$stage", []] }, "as": "e", "cond": { "$eq": ["$e.platform", "telecrm"] } } }
+  } },
+  { "$addFields": { "status": { "$ifNull": ["$conversionStatus", "Fresh"] } } },
+  { "$match": { "status": { "$in": ["Fresh", "In Pipeline", "Session Booked", "Session booked", "Session Rescheduled", "No Response", "Not Shown Up", "No Show"] } } },
+  { "$addFields": {
+    "statusDate": {
+      "$reduce": {
+        "input": "$teleStages",
+        "initialValue": null,
+        "in": {
+          "$cond": [
+            { "$or": [
+              { "$and": [ { "$in": ["$status", ["Not Shown Up", "No Show"]] }, { "$in": ["$this.status", ["Not Shown Up", "No Show"]] } ] },
+              { "$and": [ { "$in": ["$status", ["Session Booked", "Session booked"]] }, { "$in": ["$this.status", ["Session Booked", "Session booked"]] } ] },
+              { "$eq": ["$this.status", "$status"] }
+            ] },
+            { "$cond": [
+              { "$or": [ { "$eq": ["$value", null] }, { "$gt": ["$this.occurred_at", "$value"] } ] },
+              "$this.occurred_at",
+              "$value"
+            ] },
+            "$value"
+          ]
+        }
+      }
+    }
+  } },
+  { "$addFields": {
+    "bucket": {
+      "$switch": {
+        "branches": [
+          { "case": { "$in": ["$status", ["Fresh", "In Pipeline", "Session Booked", "Session booked", "Session Rescheduled"]] }, "then": "Hot" },
+          { "case": { "$in": ["$status", ["No Response", "Not Shown Up", "No Show"]] }, "then": {
+            "$let": {
+              "vars": {
+                "ageDays": {
+                  "$cond": [
+                    { "$eq": ["$statusDate", null] },
+                    null,
+                    { "$floor": { "$divide": [ { "$subtract": ["$NOW", { "$toDate": "$statusDate" }] }, 86400000 ] } }
+                  ]
+                }
+              },
+              "in": {
+                "$switch": {
+                  "branches": [
+                    { "case": { "$eq": ["$ageDays", null] }, "then": null },
+                    { "case": { "$lte": ["$ageDays", 7] }, "then": "Hot" },
+                    { "case": { "$lte": ["$ageDays", 15] }, "then": "Warm" }
+                  ],
+                  "default": "Cold"
+                }
+              }
+            }
+          } }
+        ],
+        "default": null
+      }
+    }
+  } },
+  { "$match": { "bucket": { "$in": ["Hot", "Warm", "Cold"] } } },
+  { "$group": { "_id": "$bucket", "count": { "$sum": 1 } } }
+],
+    "wtd_new_leads_count": [
+  { "$match": { "$or": [ { "created_on": { "$gte": {{ $('Calculate Windows1').item.json.week_start_utc_iso }}, "$lt": {{ $('Calculate Windows1').item.json.end_utc_iso }} } }, { "created_on": { "$gte": {{ $('Calculate Windows1').item.json.week_start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } },
+  { "$count": "count" }
+],
+    "prev_new_leads_count": [
+  { "$match": { "$or": [ { "created_on": { "$gte": {{ $('Calculate Windows1').item.json.prev_week_start_utc_iso }}, "$lt": {{ $('Calculate Windows1').item.json.prev_week_end_utc_iso }} } }, { "created_on": { "$gte": {{ $('Calculate Windows1').item.json.prev_week_start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.prev_week_end_ms }} } } ] } },
+  { "$count": "count" }
+],
+    "wtd_bookings_count": [
+  { "$match": { "stage": { "$elemMatch": { "platform": "telecrm", "status": { "$in": ["Session Booked", "Session booked", "Session Rescheduled"] }, "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.wtd_iso_start }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.week_start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ] } } } },
+  { "$count": "count" }
+],
+    "prev_bookings_count": [
+  { "$match": { "stage": { "$elemMatch": { "platform": "telecrm", "status": { "$in": ["Session Booked", "Session booked", "Session Rescheduled"] }, "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.prev_iso_start }}", "$lt": "{{ $('Calculate Windows1').item.json.prev_iso_end }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.prev_week_start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.prev_week_end_ms }} } } ] } } } },
+  { "$count": "count" }
+],
+    "fv_bookings": [
+  { "$match": { "stage": { "$elemMatch": {
+    "platform": "telecrm",
+    "status": { "$in": ["Session Booked", "Session booked", "Session Rescheduled"] },
+    "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.iso_date }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ]
+  } } } },
+  { "$count": "count" }
+]
+  } }
+]

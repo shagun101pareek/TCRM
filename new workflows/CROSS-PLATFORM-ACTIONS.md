@@ -29,7 +29,7 @@ Join key is always a **10-digit phone** (`0…` / `91…` stripped when length i
 | **1** Sync webhook | POST `/webhook/telecrm` (or n8n `telecrm`) with a phone | No (unless `NEW_TELECRM_PUSH_SOURCE=true`) | Yes — full join from TeleCRM API + dash collections | **No** |
 | **2a–2d** Watchers | Change on `telecrm` / `users` / `appointments` / `web_visitors` | No | Indirect — they **re-call sync (1)** | No |
 | **3** Dashboard → TeleCRM | Change stream on `users` insert/update | **Yes** — `status` + `name` via `autoupdatelead` | Yes | No |
-| **Temperature** | Nightly 02:00 + realtime: live `lead/search`, then `autoupdatelead` | **Yes** — `phone` + current `status` + `temperature` | Yes — temp fields for every stage that has a score | No |
+| **Temperature** | Nightly 02:00 + realtime: live `lead/search`, then `autoupdatelead` | **Yes** — `phone` + current `status` + `temperature`, except Converted and Not Converted | Yes — temp fields for every open stage that has a score | No |
 | **Reconcile** | Manual job | **Yes** — only if TeleCRM still `Fresh` | No (until a later sync) | No |
 | JS webhook / watcher | Same as 1 + 2, with 1.5s debounce and smarter user pick | Same as 1 | Same as 1 | No |
 
@@ -160,8 +160,8 @@ WF3 uses a **different** definition: any of 10 oldest appointments with `COMPLET
 
 | # | Job | TeleCRM | `new-telecrm` | Stance Dashboard | Risk | How to test |
 |---|---|---|---|---|---|---|
-| E1 | Nightly temperature 02:00 | POST `{phone, status, temperature}` from three-question score. Status is the live TeleCRM stage so the lead is not reopened to Fresh. | Sets temperature fields on the join for every scored stage | Unchanged | overwrite (if status omitted) | Session booked / Converted / In Pipeline must keep their current status on the POST. |
-| E2 | Converted or Not Converted lead | Temperature POST still includes current status | Temperature fields updated | — | safe | Must not skip these stages; omitting status reopens to Fresh. |
+| E1 | Nightly temperature 02:00 | POST `{phone, status, temperature}` from three-question score. Status is the live TeleCRM stage so the lead is not reopened to Fresh. | Sets temperature fields on the join for every scored open stage | Unchanged | overwrite (if status omitted) | Session booked / In Pipeline must keep their current status on the POST. |
+| E2 | Converted or Not Converted lead | No temperature POST | Temperature fields left as they are | — | safe | These stages are not scored. |
 | E3 | `Calls Count` > 6 and connected = 0 | Forced `cold` (`DEAD`) | Written | — | safe | Seven unanswered calls → COLD even if the lead is new. |
 | E4 | Three-question score 2 or 3 | `hot` | Written | — | safe | New + recent WhatsApp (no connected calls) → HOT. Future session date no longer forces HOT. |
 | E5 | Reconcile dry-run / `--apply` | `--apply` pushes Session booked or Converted **only if** Mongo `telecrm.status` is Fresh | Not written by the job | Unchanged | safe (conservative) | Booked first visit, CRM Fresh, run reconcile. |
@@ -205,7 +205,7 @@ Use **one phone** that already exists in TeleCRM as Fresh, with a matching Stanc
 4. **Pay / visit first assessment.** Expect: join `isConverted=true`. CRM Converted only after reconcile (if still Fresh) or after dash `ACTIVE`/`PACKAGE`.
 5. **Mark ACTIVE on dash.** Expect: CRM Converted.
 6. **Converted on CRM only, leave dash LEAD.** Expect: dash still LEAD (clinic-owned).
-7. **Nightly temperature.** Expect: HOT/WARM/COLD on join + CRM for every stage, including Session booked and Converted; CRM stage stays the same because the POST includes `status`.
+7. **Nightly temperature.** Expect: HOT/WARM/COLD on join + CRM for every open stage, including Session booked; Converted and Not Converted are left alone. CRM stage stays the same because the POST includes `status`.
 
 ---
 

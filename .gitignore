@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+lambda/nightly-worker/parameters.json
+lambda/nightly-worker/.aws-sam/
+lambda/zips/
 
 # Dependencies
 node_modules/

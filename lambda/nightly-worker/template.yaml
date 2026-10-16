@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: TeleCRM nightly temperature then source attribution. One page per invoke, off the n8n EC2.
+
+Parameters:
+  MongoUri:
+    Type: String
+    NoEcho: true
+    Description: Atlas connection string for stance-dashboard.
+  MongoDb:
+    Type: String
+    Default: stance-dashboard
+  TelecrmEnterpriseId:
+    Type: String
+  TelecrmSyncToken:
+    Type: String
+    NoEcho: true
+    Description: Sync token for lead/search.
+  TelecrmAsyncToken:
+    Type: String
+    NoEcho: true
+    Description: Async token for autoupdatelead.
+
+Resources:
+  NightlyWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-nightly-worker
+      CodeUri: .
+      Handler: src/index.handler
+      Runtime: nodejs20.x
+      Timeout: 900
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 1
+      Description: Pages open leads for temperature, then pages telecrm for source attribution.
+      Environment:
+        Variables:
+          MONGODB_URI: !Ref MongoUri
+          MONGODB_DB: !Ref MongoDb
+          TELECRM_ENTERPRISE_ID: !Ref TelecrmEnterpriseId
+          TELECRM_API_TOKEN: !Ref TelecrmSyncToken
+          TELECRM_AUTOUPDATE_TOKEN: !Ref TelecrmAsyncToken
+          NIGHTLY_TEMPERATURE_PAGE_SIZE: '10'
+          NIGHTLY_SOURCE_PAGE_SIZE: '25'
+          NIGHTLY_STATE_COLLECTION: nightly_worker_state
+          TELECRM_TIMEOUT_MS: '20000'
+          DRY_RUN: 'false'
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-nightly-worker
+      Events:
+        NightlyStart:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 2 * * ? *)
+            Name: !Sub ${AWS::StackName}-nightly-start
+            Description: 07:30 IST. Marks the night as running and processes the first temperature page.
+            Input: '{"action":"start"}'
+        NightlyWatchdog:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Name: !Sub ${AWS::StackName}-nightly-watchdog
+            Description: Continues the night only if the self-invoke chain has gone quiet.
+            Input: '{"action":"continue","watchdog":true}'
+
+Outputs:
+  NightlyWorkerFunctionName:
+    Description: Lambda function name.
+    Value: !Ref NightlyWorkerFunction
+  NightlyWorkerArn:
+    Description: Lambda function ARN.
+    Value: !GetAtt NightlyWorkerFunction.Arn

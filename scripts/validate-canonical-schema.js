@@ -28,7 +28,7 @@ const temperatureKeys = new Set([
 ]);
 const sourceEventKeys = new Set([
   'source', 'occurred_at',
-  'utm_source', 'utm_medium', 'utm_campaign',
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term',
   'campaign_id', 'campaign_name', 'lead_id',
   'ad_id', 'ad_name', 'ad_set_id', 'ad_set_name',
   'ctwa_id', 'ctwa_source',
@@ -290,6 +290,58 @@ assert.deepStrictEqual(
   'unchanged dash status must not grow stage[]',
 );
 
+const repeatedConverted = buildStageHistory(
+  {
+    stage: [
+      { platform: 'telecrm', status: 'Converted', occurred_at: '2026-09-26T07:21:49.576Z' },
+      { platform: 'telecrm', status: 'Converted', occurred_at: '2026-09-26T07:21:44.748Z' },
+      { platform: 'telecrm', status: 'Fresh', occurred_at: '2026-09-26T07:21:31.162Z' },
+      { platform: 'dash', status: 'PACKAGE', occurred_at: '2026-09-05T06:26:11.973Z' },
+      { platform: 'telecrm', status: 'PACKAGE', occurred_at: '2026-09-05T06:26:11.973Z' },
+    ],
+  },
+  [],
+  'Converted',
+  'PACKAGE',
+  '2026-09-05T06:26:11.973Z',
+);
+assert.deepStrictEqual(
+  repeatedConverted.filter((entry) => entry.platform === 'telecrm').map((entry) => `${entry.status}@${entry.occurred_at}`),
+  [
+    `Converted@${epoch('2026-09-26T07:21:44.748Z')}`,
+    `Fresh@${epoch('2026-09-26T07:21:31.162Z')}`,
+    `PACKAGE@${epoch('2026-09-05T06:26:11.973Z')}`,
+  ],
+  'back-to-back telecrm Converted rows must keep the earlier time',
+);
+assert.ok(
+  repeatedConverted.some((entry) => entry.platform === 'dash' && entry.status === 'PACKAGE'),
+  'a dash row with the same status label must stay beside the telecrm row',
+);
+
+const freshReturn = buildStageHistory(
+  {
+    stage: [
+      { platform: 'telecrm', status: 'Fresh', occurred_at: '2026-08-28T08:22:30.629Z' },
+      { platform: 'telecrm', status: 'Converted', occurred_at: '2026-04-24T14:13:59.744Z' },
+      { platform: 'telecrm', status: 'Fresh', occurred_at: '2026-04-15T07:23:34.569Z' },
+    ],
+  },
+  [],
+  'Fresh',
+  null,
+  null,
+);
+assert.deepStrictEqual(
+  freshReturn.filter((entry) => entry.platform === 'telecrm').map((entry) => `${entry.status}@${entry.occurred_at}`),
+  [
+    `Fresh@${epoch('2026-08-28T08:22:30.629Z')}`,
+    `Converted@${epoch('2026-04-24T14:13:59.744Z')}`,
+    `Fresh@${epoch('2026-04-15T07:23:34.569Z')}`,
+  ],
+  'returning to Fresh after Converted must stay in stage history',
+);
+
 assert.doesNotThrow(() => bar(7, 6), 'progress bar must clamp overflow (was Invalid count value: -4)');
 assert.doesNotThrow(() => bar(0, 6));
 assert.doesNotThrow(() => bar(8, 7));
@@ -371,6 +423,19 @@ assert.strictEqual(rootActivity['telecrm_#ofCalls'], 1, 'root Calls Count must w
 assert.strictEqual(rootActivity['telecrm_#ofmessages'], 4);
 assert.strictEqual(rootActivity.telecrm_connected_calls, 1);
 assert.strictEqual(rootActivity.name, 'Vishal');
+
+const rootCaptured = buildTeleCRMPart({
+  status: 'Converted',
+  'Captured On': 1720000000000,
+  'First Attempted Call': 1720000500000,
+  'Last Call': 1720001000000,
+  fields: { name: 'Pawan', 'Capture Frequency': 2, 'Calls Count': 1 },
+}, {});
+assert.strictEqual(rootCaptured.telecrm_first_interaction_date, new Date(1720000000000).toISOString(), 'root Captured On must become first interaction date');
+assert.strictEqual(rootCaptured.telecrm_last_contacted_date, new Date(1720001000000).toISOString(), 'root Last Call must become last contacted date');
+assert.strictEqual(rootCaptured.telecrm_first_call_done, true, 'root First Attempted Call must mark first call done');
+assert.strictEqual(rootCaptured['telecrm_#ofCalls'], 1);
+assert.strictEqual(rootCaptured.telecrm_capture_frequency, 2);
 
 const hashActivity = buildTeleCRMPart({
   status: 'Fresh',
@@ -772,7 +837,7 @@ const baseValues = {
     phone: '9879990466',
     lead_source: [
       { source: 'Whatsapp Cloud API', date: '2026-01-01T00:00:00.000Z' },
-      { source: 'Whatsapp Cloud API', date: '2026-01-02T00:00:00.000Z' },
+      { source: 'Whatsapp Cloud API', date: '2026-01-03T00:00:00.000Z' },
     ],
     source: [{ value: 'ctwa', date: '2026-01-01T00:01:00.000Z' }],
     stage: [
@@ -805,8 +870,8 @@ assert.strictEqual(whatsapp.source.length, 2, 'each dated TeleCRM capture stays 
 assert.strictEqual(whatsapp.source.filter((entry) => entry.source === 'meta_ctwa').length, 2);
 assert.strictEqual(whatsapp.source[0].source, 'meta_ctwa');
 assert.ok(toMs(whatsapp.source[0].occurred_at) <= toMs(whatsapp.source[1].occurred_at), 'source history is oldest-first');
-assert.strictEqual(whatsapp.source[0].ctwa_id, 'ctwa-1');
-assert.strictEqual(whatsapp.source[0].ctwa_source, 'source-1');
+assert.strictEqual(whatsapp.source[1].ctwa_id, 'ctwa-1', 'live lead ctwa id stays on the latest capture without the mirror source row');
+assert.strictEqual(whatsapp.source[1].ctwa_source, 'source-1');
 for (const entry of whatsapp.source) {
   assertPublicSource(entry);
   assert(Object.keys(entry).every((key) => sourceEventKeys.has(key)), `unexpected source event key: ${JSON.stringify(entry)}`);
@@ -926,11 +991,10 @@ websiteValues['Find Analytics View'] = [{
   },
 }];
 const website = runBuild(wf1Code, websiteValues);
-assert.strictEqual(website.source[0].source, 'website', 'Dashboard WEBSITE with a UTM source stores website');
+assert.strictEqual(website.source[0].source, 'google_cpc', 'web analytics with google cpc is source[0] even when the category is WEBSITE');
 assert.ok(toMs(website.source[0].occurred_at) <= toMs(website.source[website.source.length - 1].occurred_at), 'website source history is oldest-first');
 assertPublicSource(website.source[0]);
-assert(!website.source.some((entry) => entry.source === 'google_cpc'), 'analytics UTM must not add a second source');
-assert(website.source.every((entry) => entry.source !== 'WEBSITE'), 'Website source label is lowercase like dash_organic');
+assert(!website.source.some((entry) => entry.source === 'website' || entry.source === 'website_organic'), 'a classifiable visit is not also stored as website');
 
 const websiteOrganicValues = JSON.parse(JSON.stringify(websiteValues));
 websiteOrganicValues['Find Analytics View'] = [{
@@ -943,8 +1007,8 @@ websiteOrganicValues['Find Analytics View'] = [{
 const websiteOrganic = runBuild(wf1Code, websiteOrganicValues);
 assert.deepStrictEqual(
   websiteOrganic.source.map((entry) => entry.source),
-  ['website_organic', 'website'],
-  'dashboard website and the TeleCRM website capture are both kept, earliest first',
+  ['website_organic'],
+  'website_organic is the origin only when category is website and analytics found nothing',
 );
 assertPublicSource(websiteOrganic.source[0]);
 
@@ -983,6 +1047,154 @@ assert.strictEqual(metaBucket.lead_id, 'lead-1');
 assert.strictEqual(metaBucket.ad_id, 'ad-1');
 assert.strictEqual(metaBucket.ad_name, 'Ad One');
 assert.strictEqual(metaBucket.occurred_at, epoch('2026-03-01T00:00:00.000Z'));
+
+const apiBeatsMirror = JSON.parse(JSON.stringify(metaValues));
+apiBeatsMirror['Find TeleCRM Mirror History'][0].source = [{
+  value: 'Meta Lead Form',
+  date: '2026-03-01T00:01:00.000Z',
+  campaign: 'Mirror Campaign',
+  ad: 'Mirror Ad',
+  ad_set_name: 'Mirror Set',
+  lead_id: 'mirror-lead',
+}];
+const apiWins = runBuild(wf1Code, apiBeatsMirror);
+const apiBucket = apiWins.source.find((entry) => entry.source === 'meta_form');
+assert.strictEqual(apiBucket.campaign_name, 'Campaign One', 'campaign name comes from lead/search source, not the telecrm mirror');
+assert.strictEqual(apiBucket.ad_name, 'Ad One', 'ad name comes from lead/search source, not the telecrm mirror');
+assert.strictEqual(apiBucket.ad_set_name, 'Set One', 'ad set name comes from lead/search source, not the telecrm mirror');
+assert.ok(!apiWins.source.some((entry) => entry.campaign_name === 'Mirror Campaign'));
+
+const termValues = JSON.parse(JSON.stringify(baseValues));
+termValues['TeleCRM Search'][0].data[0].fields = {
+  phone: '9879990466',
+  name: 'Term Test',
+  created_on: 1720000000000,
+};
+termValues['Find TeleCRM Mirror History'] = [{
+  phone: '9879990466',
+  source: [{
+    source: 'Facebook',
+    campaign: 'Mirror Campaign',
+    ad: 'Mirror Ad',
+    ad_set_name: 'Mirror Set',
+  }],
+  stage: [{ status: 'Fresh', date: '2026-01-01T00:00:00.000Z' }],
+  status: 'Fresh',
+}];
+termValues['Find Analytics View'] = [{
+  phone: '9879990466',
+  profileData: {
+    webAnalytics: {
+      utmSource: 'google',
+      utmMedium: 'cpc',
+      utmCampaign: 'BD_SH_Search',
+      utmTerm: 'rehab and wellness',
+    },
+  },
+}];
+const termDoc = runBuild(wf1Code, termValues);
+const termEntry = termDoc.source.find((entry) => entry.source === 'google_cpc');
+assert.ok(termEntry, 'website analytics still produce a source entry');
+assert.strictEqual(termEntry.campaign_name, 'BD_SH_Search');
+assert.strictEqual(termEntry.utm_source, 'google');
+assert.strictEqual(termEntry.utm_medium, 'cpc');
+assert.strictEqual(termEntry.utm_term, 'rehab and wellness');
+assert.ok(!Object.prototype.hasOwnProperty.call(termEntry, 'utm_campaign'), 'campaign is stored as campaign_name');
+assert.ok(!termDoc.source.some((entry) => entry.campaign_name === 'Mirror Campaign'), 'mirror campaign is not used when the live lead has no source');
+
+const touchTerm = buildSourceHistory({}, {}, [{
+  utm_source: 'google',
+  utm_medium: 'cpc',
+  utm_campaign: 'BD_SH_Search',
+  utm_term: 'rehab and wellness',
+  ts: '2026-08-08T14:12:58.103Z',
+}], null);
+assert.strictEqual(touchTerm[0].source, 'google_cpc');
+assert.strictEqual(touchTerm[0].campaign_name, 'BD_SH_Search', 'utm campaign is stored as campaign_name');
+assert.strictEqual(touchTerm[0].utm_source, 'google');
+assert.strictEqual(touchTerm[0].utm_medium, 'cpc');
+assert.strictEqual(touchTerm[0].utm_term, 'rehab and wellness');
+assert.ok(!Object.prototype.hasOwnProperty.call(touchTerm[0], 'utm_campaign'));
+
+const websiteAnalytics = buildSourceHistory({}, {
+  lead_source: [{ source: 'Website', date: '2026-01-02T00:00:00.000Z' }],
+  source: [{ value: 'Website' }],
+}, [], null, {
+  category: 'WEBSITE',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  webAnalytics: {
+    utmSource: 'google',
+    utmMedium: 'cta',
+    utmCampaign: 'BD_SH_Search_LeadGen_Blr_Sports',
+    utmAdgroup: 'sports_physio_therapy_195309677217',
+    utmContent: '812933500992',
+    utmTerm: 'clinic sport',
+  },
+});
+assert.ok(websiteAnalytics.length >= 1 && websiteAnalytics.every((entry) => entry.source === 'others'));
+assert.ok(websiteAnalytics.every((entry) => entry.campaign_name === 'BD_SH_Search_LeadGen_Blr_Sports'));
+assert.ok(websiteAnalytics.every((entry) => entry.ad_set_name === 'sports_physio_therapy_195309677217'));
+assert.ok(websiteAnalytics.every((entry) => entry.ad_name === '812933500992'));
+assert.ok(websiteAnalytics.every((entry) => entry.utm_source === 'google'));
+assert.ok(websiteAnalytics.every((entry) => entry.utm_medium === 'cta'));
+assert.ok(websiteAnalytics.every((entry) => entry.utm_term === 'clinic sport'));
+assert.ok(websiteAnalytics.every((entry) => !Object.prototype.hasOwnProperty.call(entry, 'utm_campaign')));
+
+const protectedMeta = buildSourceHistory({}, {
+  lead_source: [{ source: 'Facebook', campaign: 'FB Campaign', ad: 'FB Ad', ad_set_name: 'FB Set', ad_set_id: '120245600430950460', lead_id: '1355923176715596', date: '2026-03-01T00:00:00.000Z' }],
+  source: [{ value: 'Facebook', campaign: 'FB Campaign', ad: 'FB Ad', ad_set_name: 'FB Set', ad_set_id: '120245600430950460', lead_id: '1355923176715596' }],
+  created_at: '2026-03-01T00:00:00.000Z',
+}, [], null, {
+  category: 'WEBSITE',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  webAnalytics: {
+    utmSource: 'google',
+    utmCampaign: 'Website Campaign',
+    utmAdgroup: 'Website Adset',
+    utmContent: 'Website Ad',
+    utmTerm: 'website term',
+  },
+});
+const metaRow = protectedMeta.find((entry) => entry.source === 'meta_form');
+const webRow = protectedMeta.find((entry) => entry.source === 'google_organic');
+assert.ok(metaRow && webRow);
+assert.strictEqual(metaRow.campaign_name, 'FB Campaign');
+assert.strictEqual(metaRow.ad_name, 'FB Ad');
+assert.strictEqual(metaRow.ad_set_name, 'FB Set');
+assert.strictEqual(metaRow.ad_set_id, '120245600430950460');
+assert.strictEqual(metaRow.lead_id, '1355923176715596');
+assert.ok(!Object.prototype.hasOwnProperty.call(metaRow, 'utm_term'));
+assert.strictEqual(webRow.campaign_name, 'Website Campaign');
+assert.strictEqual(webRow.ad_set_name, 'Website Adset');
+assert.strictEqual(webRow.ad_name, 'Website Ad');
+assert.strictEqual(webRow.utm_source, 'google');
+assert.strictEqual(webRow.utm_term, 'website term');
+assert.ok(!Object.prototype.hasOwnProperty.call(webRow, 'utm_campaign'));
+assert.ok(!Object.prototype.hasOwnProperty.call(metaRow, 'utm_source'));
+
+const websiteOnWorkflow = JSON.parse(JSON.stringify(websiteValues));
+websiteOnWorkflow['Find Analytics View'] = [{
+  phone: '9879990466',
+  profileData: {
+    category: 'WEBSITE',
+    webAnalytics: {
+      utmSource: 'google',
+      utmMedium: 'cta',
+      utmCampaign: 'BD_SH_PMax_Blr',
+      utmAdgroup: 'testimonial',
+      utmTerm: 'clinic sport',
+    },
+  },
+}];
+const websiteFilled = runBuild(wf1Code, websiteOnWorkflow);
+assert.ok(websiteFilled.source.length >= 1);
+assert.ok(websiteFilled.source.every((entry) => entry.source === 'others'));
+assert.ok(websiteFilled.source.every((entry) => entry.campaign_name === 'BD_SH_PMax_Blr'));
+assert.ok(websiteFilled.source.every((entry) => entry.ad_set_name === 'testimonial'));
+assert.ok(websiteFilled.source.every((entry) => entry.utm_source === 'google'));
+assert.ok(websiteFilled.source.every((entry) => entry.utm_medium === 'cta'));
+assert.ok(websiteFilled.source.every((entry) => entry.utm_term === 'clinic sport'));
+assert.ok(websiteFilled.source.every((entry) => !Object.prototype.hasOwnProperty.call(entry, 'utm_campaign')));
 
 const repeatValues = JSON.parse(JSON.stringify(baseValues));
 repeatValues['Load Existing Doc'] = [{ ...whatsapp }];
@@ -1213,6 +1425,7 @@ for (const [wf, build] of [
 ]) {
   const code = node(wf, build).parameters.jsCode;
   assert(code.includes('item.sequence > best.sequence'), `${wf.name}/${build} must pick newest stage by time/sequence`);
+  assert(code.includes('lastStatus.get(platform) === status'), `${wf.name}/${build} must drop a repeated stage on the same platform`);
   assert(!code.includes('for (let i = output.length - 1; i >= 0; i--)'), `${wf.name}/${build} must not treat array end as latest stage`);
 }
 
@@ -1237,6 +1450,7 @@ assert(!wf1.nodes.some((item) => item.name === 'Loop Over Phones'), 'sync webhoo
 assert.deepStrictEqual(wf1.connections['IF Lead Found'].main[0].map((edge) => edge.node), ['Load Existing Doc']);
 assert.deepStrictEqual(wf1.connections['IF Lead Found'].main[1].map((edge) => edge.node), ['Error Response']);
 assert.strictEqual(wf1.connections['Error Response'], undefined, 'Error Response must stop the workflow');
+assert.deepStrictEqual(wf1.connections['Build Date Cleanup Pipeline'].main[0].map((edge) => edge.node), ['Remove Legacy Root CTWA']);
 assert.deepStrictEqual(wf1.connections['Remove Legacy Root CTWA'].main[0].map((edge) => edge.node), ['Success Response']);
 assert.strictEqual(node(wf1, 'Load Existing Doc').parameters.operation, 'aggregate', 'join lookup must use aggregate so n8n returns the existing document');
 assert(node(wf1, 'Load Existing Doc').parameters.query.includes('$match'), 'existing join lookup must $match phone variants');
@@ -1291,7 +1505,11 @@ assert(node(wf1, 'Aggregate Appointments').parameters.query.includes('reschedule
 assert(node(wf3, 'Aggregate Appointments').parameters.query.includes('rescheduledFrom'), 'WF3 must read reschedule fields');
 assert.deepStrictEqual(
   wf1.connections['Upsert Document'].main[0].map((edge) => edge.node),
-  ['Remove Legacy Root CTWA', 'TeleCRM Status Changed?'],
+  ['Build Date Cleanup Pipeline', 'TeleCRM Status Changed?', 'Source Differs?'],
+);
+assert.deepStrictEqual(
+  wf1.connections['Source Differs?'].main[0].map((edge) => edge.node),
+  ['Push Earliest Source'],
 );
 assert.deepStrictEqual(
   wf3.connections['Upsert Document'].main[0].map((edge) => edge.node),
@@ -1309,13 +1527,23 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   wf3.connections['Require new-telecrm Write'].main[0].map((edge) => edge.node),
-  ['Remove Legacy Root CTWA', 'Lead Found in TeleCRM?'],
+  ['Build Date Cleanup Pipeline', 'Lead Found in TeleCRM?'],
   'WF3 must branch create vs update only after write verification',
 );
 assert.deepStrictEqual(
+  wf3.connections['Build Date Cleanup Pipeline'].main[0].map((edge) => edge.node),
+  ['Remove Legacy Root CTWA'],
+  'WF3 date cleanup Code node must feed the Mongo aggregate',
+);
+assert.deepStrictEqual(
   wf3.connections['Lead Found in TeleCRM?'].main[0].map((edge) => edge.node),
-  ['TeleCRM Status Changed?'],
+  ['TeleCRM Status Changed?', 'Source Differs?'],
   'WF3 update branch',
+);
+assert.deepStrictEqual(
+  wf3.connections['Source Differs?'].main[0].map((edge) => edge.node),
+  ['Push Earliest Source'],
+  'WF3 source push runs even when status did not change',
 );
 assert.deepStrictEqual(
   wf3.connections['Lead Found in TeleCRM?'].main[1].map((edge) => edge.node),
@@ -1324,8 +1552,26 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   wf3.connections['Should Create Lead?'].main[0].map((edge) => edge.node),
-  ['Push Create to TeleCRM'],
+  ['Wait for TeleCRM Lead'],
 );
+assert.deepStrictEqual(
+  wf3.connections['Wait for TeleCRM Lead'].main[0].map((edge) => edge.node),
+  ['Re-check TeleCRM Lead'],
+);
+assert.deepStrictEqual(
+  wf3.connections['Re-check TeleCRM Lead'].main[0].map((edge) => edge.node),
+  ['Still No TeleCRM Lead?'],
+);
+assert(/\/lead\/search$/.test(node(wf3, 'Re-check TeleCRM Lead').parameters.url), 'WF3 re-check must ask TeleCRM, not the mirror');
+assert.strictEqual(node(wf3, 'Re-check TeleCRM Lead').parameters.options.response.response.neverError, false, 'a failed lookup must not fall through to create');
+assert.deepStrictEqual(
+  wf3.connections['Still No TeleCRM Lead?'].main[0].map((edge) => edge.node),
+  ['Push Create to TeleCRM'],
+  'WF3 creates only when the mirror still has no lead after the wait',
+);
+assert.deepStrictEqual(wf3.connections['Still No TeleCRM Lead?'].main[1], []);
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes("doc.telecrm_push_phone = '91' + phone10;"), 'WF3 create must send 91 + 10 digits');
+assert(node(wf3, 'Finalize Status Decision').parameters.jsCode.includes('doc.telecrm_push_phone = mirrorPhone;'), 'WF3 update must keep the stored mirror phone');
 assert.deepStrictEqual(
   wf3.connections['TeleCRM Status Changed?'].main[0].map((edge) => edge.node),
   ['Push Update to TeleCRM'],
@@ -1447,19 +1693,19 @@ function classifiedSource(input) {
 }
 
 const sourceCases = [
-  [{ user_category: 'ORGANIC' }, 'dash_organic'],
-  [{ user_category: 'Advertisement' }, 'dash_performance'],
-  [{ user_category: 'REFERRAL' }, 'dash_customer'],
-  [{ user_category: 'ADVOCATE' }, 'dash_advocate'],
-  [{ user_category: 'DOCTOR' }, 'dash_consultant'],
+  [{ user_category: 'ORGANIC' }, null],
+  [{ user_category: 'Advertisement' }, null],
+  [{ user_category: 'REFERRAL' }, null],
+  [{ user_category: 'ADVOCATE' }, null],
+  [{ user_category: 'DOCTOR' }, null],
   [{ user_category: 'WEBSITE' }, 'website_organic'],
   [{ user_category: 'WEBSITE', web_analytics: { utmSource: null } }, 'website_organic'],
-  [{ user_category: 'WEBSITE', web_analytics: { utmSource: 'google', utmMedium: 'cpc' } }, 'website'],
-  [{ user_category: 'website', web_analytics: { referrer: 'https://www.google.com/search?q=stance' } }, 'website_organic'],
-  [{ telecrm_source: [{ value: 'Performance' }] }, null],
-  [{ telecrm_source: [{ value: 'organic' }] }, null],
-  [{ telecrm_source: [{ value: 'Clinician' }] }, null],
-  [{ telecrm_source: [{ value: 'FOUNDER' }] }, null],
+  [{ user_category: 'WEBSITE', web_analytics: { utmSource: 'google', utmMedium: 'cpc' } }, 'google_cpc'],
+  [{ user_category: 'website', web_analytics: { referrer: 'https://www.google.com/search?q=stance' } }, 'google_organic'],
+  [{ telecrm_source: [{ value: 'Performance' }] }, 'dash_performance'],
+  [{ telecrm_source: [{ value: 'organic' }] }, 'dash_organic'],
+  [{ telecrm_source: [{ value: 'Clinician' }] }, 'dash_consultant'],
+  [{ telecrm_source: [{ value: 'FOUNDER' }] }, 'dash_founder'],
   [{ lead_source: 'Website' }, 'website'],
   [{ lead_source: 'App' }, null],
   [{ lead_source: 'Facebook' }, 'meta_form'],
@@ -1480,7 +1726,7 @@ const sourceCases = [
   [{ web_analytics: { utmSource: 'facebook', utmMedium: 'paid_social' } }, 'meta_paid'],
   [{ web_analytics: { utmSource: 'meta', utmMedium: 'referral' } }, 'meta_other'],
   [{ web_analytics: { utmSource: 'wesbite' } }, 'website'],
-  [{ web_analytics: { utmSource: 'unknown-network' } }, null],
+  [{ web_analytics: { utmSource: 'unknown-network' } }, 'others'],
   [{ web_analytics: { utmMedium: 'WA' } }, 'Tele_WACA'],
 ];
 for (const [input, expected] of sourceCases) {
@@ -1497,16 +1743,16 @@ assert.strictEqual(
     telecrm_source: [{ value: 'performance' }],
     web_analytics: { utmSource: 'google', utmMedium: 'cpc' },
   }),
-  'dash_performance',
-  'Dashboard category must beat TeleCRM lead_source and analytics UTM',
+  'google_cpc',
+  'web analytics is source[0] when a utm is present',
 );
 assert.strictEqual(
   classifiedSource({
     lead_source: 'Facebook',
     web_analytics: { utmSource: 'google', utmMedium: 'cpc' },
   }),
-  'meta_form',
-  'TeleCRM lead_source must beat analytics when category is absent',
+  'google_cpc',
+  'a website visit stays source[0] ahead of a TeleCRM lead source',
 );
 assert.strictEqual(
   classifiedSource({
@@ -1647,16 +1893,14 @@ const organicCapture = runSourceUpdater({
 });
 assert.deepStrictEqual(
   organicCapture.source.map((entry) => entry.source),
-  ['dash_organic', 'website'],
-  'dashboard category and the TeleCRM capture are kept oldest-first',
+  ['others'],
+  'a referrer with no known channel is the analytics origin',
 );
-assert.deepStrictEqual(
-  categoryWins.source.map((entry) => entry.source),
-  ['meta_form', 'dash_organic'],
-  'earliest TeleCRM capture is source[0], then the later dashboard category',
-);
+assert.strictEqual(categoryWins.source[0].source, 'google_cpc', 'analytics origin stays source[0]');
+assert.ok(categoryWins.source.some((entry) => entry.source === 'meta_form'), 'a non-website TeleCRM capture can follow the analytics origin');
 assertPublicSource(categoryWins.source[0]);
-assert(!categoryWins.source.some((entry) => entry.source === 'google_cpc'));
+assert(!categoryWins.source.some((entry) => entry.source === 'dash_organic'));
+assert(!categoryWins.source.some((entry) => entry.source === 'dash_performance'));
 assert(!categoryWins.source.some((entry) => entry.source === 'lead_recapture'));
 assert(!categoryWins.source.some((entry) => entry.source === 'others'));
 assert.deepStrictEqual(
@@ -1670,8 +1914,12 @@ assert.deepStrictEqual(
   'workflow 4 import must connect Calculate Source Attribution to the IF node',
 );
 assert(
-  wf4.connections['Update Canonical Source'].main[0].some((edge) => edge.node === 'Enforce Canonical Schema'),
+  wf4.connections['Update Canonical Source'].main[0].some((edge) => edge.node === 'Build Date Cleanup Pipeline'),
   'workflow 4 cleanup must run after the canonical source write',
+);
+assert.deepStrictEqual(
+  wf4.connections['Build Date Cleanup Pipeline'].main[0].map((edge) => edge.node),
+  ['Enforce Canonical Schema'],
 );
 assert(!wf4.connections['Calculate Source Attribution'].main[0].some((edge) => edge.node === 'Enforce Canonical Schema'));
 assert.strictEqual(wf4.active, false, 'source attribution export must stay inactive until credentials are attached');
@@ -1690,6 +1938,13 @@ assert(webhookJs.includes(stripOrigin), 'webhook must strip origin/tele_source/t
 assert(webhookJs.includes('omitEmpty'), 'webhook must omit empty join keys');
 assert(webhookJs.includes('last_synced_at'), 'webhook must write last_synced_at');
 assert(webhookJs.includes('Captured On'), 'webhook must map TeleCRM Captured On');
+assert(webhookJs.includes('pickActivityRaw'), 'webhook must read panel dates from the lead root and fields');
+assert(webhookJs.includes('First Attempted Call'), 'webhook must accept the First Attempted Call panel label');
+const rootCapturedCopy = "connectedCallCount', 'Captured On'";
+assert(node(wf1, 'Build Document').parameters.jsCode.includes(rootCapturedCopy), 'WF1 must copy root Captured On onto fields');
+assert(node(wf3, 'Build Full Document').parameters.jsCode.includes(rootCapturedCopy), 'WF3 must copy root Captured On onto fields');
+assert(node(main, 'Build Document').parameters.jsCode.includes(rootCapturedCopy), 'main Build Document must copy root Captured On onto fields');
+assert(node(main, 'Build Full Document').parameters.jsCode.includes(rootCapturedCopy), 'main Build Full Document must copy root Captured On onto fields');
 assert(webhookJs.includes('telecrm_connected_calls'), 'webhook must store connected call count');
 assert(webhookJs.includes('# Calls Count'), 'webhook must read hashed Calls Count alias');
 assert(webhookJs.includes('pickActivityCount'), 'webhook must pick live activity counts over the mirror');
@@ -1706,18 +1961,26 @@ assert(node(main, 'Build Full Document').parameters.jsCode.includes(stripOrigin)
 assert(node(wf1, 'Build Document').parameters.jsCode.includes(stripOrigin), 'sync Build Document must strip origin fields');
 assert(node(wf4, 'Calculate Source Attribution').parameters.jsCode.includes(stripOrigin), 'WF4 must strip origin fields');
 
-const canonicalCleanupNodes = [
-  node(wf1, 'Remove Legacy Root CTWA'),
-  node(wf3, 'Remove Legacy Root CTWA'),
-  node(wf4, 'Enforce Canonical Schema'),
-  node(main, 'Remove Legacy Root CTWA'),
-  node(main, 'Remove Legacy Root CTWA1'),
+const canonicalCleanupPairs = [
+  [node(wf1, 'Build Date Cleanup Pipeline'), node(wf1, 'Remove Legacy Root CTWA')],
+  [node(wf3, 'Build Date Cleanup Pipeline'), node(wf3, 'Remove Legacy Root CTWA')],
+  [node(wf4, 'Build Date Cleanup Pipeline'), node(wf4, 'Enforce Canonical Schema')],
+  [node(main, 'Build Date Cleanup Pipeline'), node(main, 'Remove Legacy Root CTWA')],
+  [node(main, 'Build Date Cleanup Pipeline1'), node(main, 'Remove Legacy Root CTWA1')],
 ];
-for (const item of canonicalCleanupNodes) {
-  const query = item.parameters.query;
-  assert(query.includes('$$REMOVE'), `${item.name} must remove null temperature fields`);
+for (const [codeNode, mongoNode] of canonicalCleanupPairs) {
+  const jsCode = codeNode.parameters.jsCode || '';
+  assert.strictEqual(
+    mongoNode.parameters.query,
+    '={{ $json.cleanupPipeline }}',
+    `${mongoNode.name} must use the Code-built pipeline string (avoids n8n }} truncation)`,
+  );
+  assert(jsCode.includes('$$REMOVE'), `${codeNode.name} must remove null temperature fields`);
+  assert(jsCode.includes('$$row.occurred_at'), `${codeNode.name} must convert nested occurred_at`);
+  assert(jsCode.includes("to: 'date'") || jsCode.includes('to: "date"'), `${codeNode.name} must store dates as BSON Date`);
+  assert(jsCode.includes('cleanupPipeline'), `${codeNode.name} must emit cleanupPipeline JSON`);
   for (const key of temperatureKeys) {
-    assert(query.includes(key), `${item.name} cleanup must handle ${key}`);
+    assert(jsCode.includes(key), `${codeNode.name} cleanup must handle ${key}`);
   }
 }
 
@@ -1744,6 +2007,89 @@ assert(node(wf3, 'Push Update to TeleCRM').parameters.jsonBody.includes('dashboa
 assert(node(wf3, 'Push Update to TeleCRM').parameters.jsonBody.includes('dash_email'));
 assert(node(wf3, 'Push Create to TeleCRM').parameters.jsonBody.includes('telecrm_push_phone'));
 assert(node(wf3, 'Push Create to TeleCRM').parameters.jsonBody.includes('conversionStatus'));
+assert(
+  node(wf3, 'Push Create to TeleCRM').parameters.jsonBody.includes('if (d.telecrm_push_source) fields.source = d.telecrm_push_source'),
+  'WF3 create includes source only when the earliest label exists',
+);
+assert(!node(wf3, 'Push Update to TeleCRM').parameters.jsonBody.includes('telecrm_push_source'), 'WF3 status update stays status and name');
+
+function loadNamedFunction(code, name) {
+  const start = code.indexOf(`function ${name}(`);
+  assert(start >= 0, `missing ${name}`);
+  let depth = 0;
+  for (let i = code.indexOf('{', start); i < code.length; i += 1) {
+    if (code[i] === '{') depth += 1;
+    else if (code[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return new Function(`return ${code.slice(start, i + 1)}`)();
+    }
+  }
+  throw new Error(`unterminated ${name}`);
+}
+
+const wf1Finalize = node(wf1, 'Finalize Recapture Decision').parameters.jsCode;
+const wf3Finalize = node(wf3, 'Finalize Status Decision').parameters.jsCode;
+const decideSourcePush = loadNamedFunction(wf1Finalize, 'decideEarliestSourcePush');
+const dropdownSource = loadNamedFunction(wf1Finalize, 'telecrmDropdownSource');
+assert.strictEqual(
+  wf1Finalize.slice(wf1Finalize.indexOf('function telecrmDropdownSource'), wf1Finalize.indexOf('function decideEarliestSourcePush')),
+  wf3Finalize.slice(wf3Finalize.indexOf('function telecrmDropdownSource'), wf3Finalize.indexOf('function decideEarliestSourcePush')),
+  'WF1 and WF3 must share the TeleCRM source dropdown reader',
+);
+assert.strictEqual(
+  wf1Finalize.slice(wf1Finalize.indexOf('function decideEarliestSourcePush'), wf1Finalize.indexOf('function readCurrentTelecrmDropdownSource')),
+  wf3Finalize.slice(wf3Finalize.indexOf('function decideEarliestSourcePush'), wf3Finalize.indexOf('function readCurrentTelecrmDropdownSource')),
+  'WF1 and WF3 must share the earliest-source push decision',
+);
+assert(wf1Finalize.includes("$('TeleCRM Search')"), 'WF1 compares against the live TeleCRM source field');
+assert(wf3Finalize.includes("$('Find TeleCRM Mirror')"), 'WF3 compares against the telecrm mirror source');
+assert(wf1Finalize.includes('doc.should_push_source = sourcePush.should_push_source'));
+assert(wf3Finalize.includes('doc.telecrm_push_source = sourcePush.telecrm_push_source'));
+assert.deepStrictEqual(
+  decideSourcePush([], 'Performance', '9999999999'),
+  { telecrm_push_source: null, should_push_source: false },
+  'an empty source array must not push',
+);
+assert.deepStrictEqual(
+  decideSourcePush(undefined, '', '9999999999'),
+  { telecrm_push_source: null, should_push_source: false },
+);
+assert.strictEqual(
+  decideSourcePush([{ source: 'meta_form' }], 'meta_form', '9999999999').should_push_source,
+  false,
+  'the same TeleCRM source is skipped',
+);
+assert.deepStrictEqual(
+  decideSourcePush([{ source: 'website' }], 'Website', '9999999999'),
+  { telecrm_push_source: 'website', should_push_source: true },
+  'source compare is case-sensitive and keeps the stored label',
+);
+assert.strictEqual(
+  decideSourcePush([{ source: 'dash_consultant' }], '', '9999999999').telecrm_push_source,
+  'dash_consultant',
+);
+assert.strictEqual(
+  decideSourcePush([{ source: '  Manual  ' }], 'Manual', '9999999999').should_push_source,
+  false,
+);
+assert.strictEqual(
+  decideSourcePush([{ source: 'meta_form' }], 'Performance', '').should_push_source,
+  false,
+  'a missing push phone must not post source',
+);
+assert.strictEqual(dropdownSource('meta_form'), 'meta_form');
+assert.strictEqual(dropdownSource([{ value: 'Performance' }, { value: 'meta_form' }]), 'meta_form');
+assert.strictEqual(dropdownSource([{ source: 'Facebook' }]), '', 'history rows must not be read as lead_source');
+for (const wf of [wf1, wf3]) {
+  const body = node(wf, 'Push Earliest Source').parameters.jsonBody;
+  assert(body.includes('source: d.telecrm_push_source'), `${wf.name} source body`);
+  assert(body.includes('phone: d.telecrm_push_phone'), `${wf.name} source phone`);
+  assert(!body.includes('status:'), `${wf.name} source push must not send status`);
+}
+const pushScript = fs.readFileSync(path.join(root, 'scripts/push-earliest-source.js'), 'utf8');
+assert(pushScript.includes('function decideEarliestSourcePush'), 'backfill script must use the same decision');
+assert(pushScript.includes('should_push_source: Boolean(earliest) && Boolean(pushPhone) && earliest !== current'));
+assert(!pushScript.includes('NEW_TELECRM_PUSH_SOURCE=true'), 'backfill script must not enable the old source push');
 assert.strictEqual(realtimeTempUpdate.parameters.operation, 'aggregate', 'realtime temperature write must unset leftover fields');
 assert.strictEqual(nightlyTempUpdate.parameters.operation, 'aggregate');
 for (const item of [realtimeTempUpdate, nightlyTempUpdate]) {

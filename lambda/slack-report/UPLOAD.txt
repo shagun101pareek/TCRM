@@ -1,0 +1,32 @@
+Upload this zip in the Slack Lambda: Code -> Upload from -> .zip file.
+Handler: index.handler
+Runtime: Node.js 20.x or 24.x
+Timeout: 5 minutes
+Memory: 1024 MB
+
+This zip is the third morning job: the 8:30 IST new-telecrm report to Slack.
+It posts the summary and the HTML file. The PDF step needs GOTENBERG_URL.
+The n8n Gotenberg address http://gotenberg:3000 is only reachable from the n8n machine, so leave GOTENBERG_URL blank unless you have a public Gotenberg.
+
+Leave the n8n schedule Daily 8:30AM IST off. This function replaces it.
+Temperature and source stay on the other Lambda, not in this zip.
+
+EventBridge on this function:
+- cron(0 3 * * ? *) UTC, which is 08:30 IST. Input {"action":"run"}
+A zip upload does not create that rule.
+
+Environment variables:
+MONGODB_URI
+MONGODB_DB=stance-dashboard
+SLACK_BOT_TOKEN
+SLACK_CHANNEL=#daily-leads-new-telecrm
+GOTENBERG_URL=
+DRY_RUN=true
+
+The Slack app needs chat:write, files:write, and channels:read, and it must be in the channel.
+
+Campaign cells read campaign_name and utmCampaign. Ad cells read ad_name and utmAdgroup.
+
+Test event: {"action":"run"}
+A specific day: {"action":"run","test_date":"2026-10-13"}
+Set DRY_RUN=false only after a dry run looks right, and only after the n8n 8:30 schedule is off.

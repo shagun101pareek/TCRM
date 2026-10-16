@@ -221,6 +221,22 @@ function compareHistoryOldestFirst(left, right) {
   return left.sequence - right.sequence;
 }
 
+// Drop a stage row when it repeats the previous status on the same platform.
+// A later return to that status is kept. The kept row uses the earlier time.
+function collapseUnchangedStages(items) {
+  const ordered = items.slice().sort(compareHistoryOldestFirst);
+  const lastStatus = new Map();
+  const kept = [];
+  for (const item of ordered) {
+    const platform = canonicalNorm(item.entry.platform);
+    const status = canonicalNorm(item.entry.status);
+    if (lastStatus.get(platform) === status) continue;
+    lastStatus.set(platform, status);
+    kept.push(item);
+  }
+  return kept.sort(compareHistoryNewestFirst).map((item) => item.entry);
+}
+
 function firstDefined(...vals) {
   for (const v of vals) if (v !== undefined && v !== null && v !== '') return v;
   return undefined;
@@ -308,22 +324,43 @@ function unwrapActivityValue(value) {
   return value;
 }
 
-function pickActivityCount(lead, previous, keys) {
+function activitySources(lead) {
   const nested = lead && lead.fields && typeof lead.fields === 'object' && !Array.isArray(lead.fields)
     ? lead.fields
     : {};
   const root = lead && typeof lead === 'object' && !Array.isArray(lead) ? lead : {};
+  return { root, nested };
+}
+
+function pickActivityRaw(lead, keys) {
+  const { root, nested } = activitySources(lead);
   const live = [];
   for (const key of keys) {
     live.push(unwrapActivityValue(root[key]));
     live.push(unwrapActivityValue(nested[key]));
   }
-  const n = tidyNumber(firstDefined(...live));
+  return firstDefined(...live);
+}
+
+function pickActivityCount(lead, previous, keys) {
+  const n = tidyNumber(pickActivityRaw(lead, keys));
   if (n !== undefined) return n;
   const prev = tidyNumber(unwrapActivityValue(previous));
   if (prev !== undefined && prev > 0) return prev;
   return undefined;
 }
+
+const FIRST_INTERACTION_KEYS = [
+  'first_interaction_date', 'Captured On', 'captured_on', 'capturedOn',
+];
+const LAST_CONTACTED_KEYS = [
+  'last_contacted_date', 'Last Call', 'last_call', 'Last Activity On',
+  'Last Incoming Activity On', 'Last Incoming whatsapp message date',
+];
+const FIRST_CALL_DATE_KEYS = [
+  'First Call Attempt', 'First Call Attempt Date', 'first_call_attempt',
+  'First Attempted Call', 'First Call',
+];
 
 function tidyBoolean(value) {
   if (value === true || value === false) return value;
@@ -332,14 +369,13 @@ function tidyBoolean(value) {
   return undefined;
 }
 
-function firstCallDoneValue(f, prev) {
+function firstCallDoneValue(lead, prev) {
   const bool = tidyBoolean(firstDefined(
-    f.first_call_done, f['First Call Done'], f.telecrm_first_call_done, prev.telecrm_first_call_done
+    pickActivityRaw(lead, ['first_call_done', 'First Call Done', 'telecrm_first_call_done']),
+    prev.telecrm_first_call_done
   ));
   if (bool === true || bool === false) return bool;
-  return toIso(firstDefined(f['First Call Attempt'], f['First Call Attempt Date'], f.first_call_attempt))
-    ? true
-    : undefined;
+  return toIso(pickActivityRaw(lead, FIRST_CALL_DATE_KEYS)) ? true : undefined;
 }
 
 // Unified stage timeline, same shape as source[]: each entry is
@@ -460,13 +496,11 @@ function buildTeleCRMPart(lead, existing) {
     'telecrm_#ofmessages': pickActivityCount(lead, prev['telecrm_#ofmessages'], MESSAGE_COUNT_KEYS),
     telecrm_connected_calls: pickActivityCount(lead, prev.telecrm_connected_calls, CONNECTED_CALL_KEYS),
     telecrm_first_interaction_date: toIso(firstDefined(
-      f.first_interaction_date, f['Captured On'], f.telecrm_first_interaction_date, prev.telecrm_first_interaction_date
+      pickActivityRaw(lead, FIRST_INTERACTION_KEYS), prev.telecrm_first_interaction_date
     )),
-    telecrm_first_call_done: firstCallDoneValue(f, prev),
+    telecrm_first_call_done: firstCallDoneValue(lead, prev),
     telecrm_last_contacted_date: toIso(firstDefined(
-      f.last_contacted_date, f['Last Call'], f['Last Activity On'],
-      f['Last Incoming Activity On'], f['Last Incoming whatsapp message date'],
-      f.telecrm_last_contacted_date, prev.telecrm_last_contacted_date
+      pickActivityRaw(lead, LAST_CONTACTED_KEYS), prev.telecrm_last_contacted_date
     )),
     telecrm_drop_off_reason: tidyScalar(firstDefined(
       f.drop_off_reason, f['drop-off_reason_1'], prev.telecrm_drop_off_reason
@@ -546,6 +580,7 @@ function sourceLabel(doc) {
   if (lead === 'whatsapp cloud api' || lead === 'whatsapp' || rawSource === 'whatsapp cloud api' || rawSource === 'whatsapp') return 'Whatsapp Cloud API';
   if (bucket === 'meta lead form' || lead === 'facebook' || rawSource === 'facebook' || rawSource === 'meta lead form' || rawSource === 'meta_form') return 'meta_form';
   if (lead === 'excel' || lead === 'manual' || lead === 'call logs' || lead === 'ivr' || lead === 'google_sheets') return 'Manual';
+  if (src === 'app' || src === 'stance_app' || src === 'healthflex_app') return 'app';
   if (!canonicalBlank(doc.gclid) || (src === 'google' && med === 'cpc')) return 'google_cpc';
   if (src === 'gmb') return 'google_gmb';
   if (src.includes('interakt')) return 'interakt';
@@ -566,7 +601,7 @@ function sourceLabel(doc) {
 }
 const SOURCE_EVENT_KEYS = [
   'source', 'origin', 'occurred_at', 'tele_leadsource', 'tele_source',
-  'utm_source', 'utm_medium', 'utm_campaign',
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term',
   'campaign_id', 'campaign_name', 'lead_id',
   'ad_id', 'ad_name', 'ad_set_id', 'ad_set_name',
   'ctwa_id', 'ctwa_source',
@@ -574,7 +609,7 @@ const SOURCE_EVENT_KEYS = [
 function sourceEvent(raw, defaults = {}) {
   const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const doc = { ...defaults, ...input };
-  const entry = { source: sourceLabel(doc) };
+  const entry = { source: firstDefined(doc.forced_source, sourceLabel(doc)) };
   canonicalPut(entry, 'origin', firstDefined(doc.origin, doc.platform));
   const sourceOccurredIso = toIso(firstDefined(
     doc.occurred_at, doc.dateISO, doc.date, doc.ts, doc.timestamp,
@@ -586,6 +621,7 @@ function sourceEvent(raw, defaults = {}) {
   canonicalPut(entry, 'utm_source', firstDefined(doc.utm_source, doc.utmSource));
   canonicalPut(entry, 'utm_medium', firstDefined(doc.utm_medium, doc.utmMedium));
   canonicalPut(entry, 'utm_campaign', firstDefined(doc.utm_campaign, doc.utmCampaign));
+  canonicalPut(entry, 'utm_term', firstDefined(doc.utm_term, doc.utmTerm));
   canonicalPut(entry, 'campaign_id', firstDefined(doc.campaign_id, doc.facebook_campaign_id, doc.telecrm_campaign_id));
   canonicalPut(entry, 'campaign_name', firstDefined(doc.campaign_name, doc.facebook_campaign, doc.telecrm_campaign, doc.campaign));
   canonicalPut(entry, 'lead_id', firstDefined(doc.lead_id, doc.external_lead_id, doc.facebook_lead_id));
@@ -782,35 +818,169 @@ function publishCapture(entry) {
   return published;
 }
 // Oldest capture first. source[0] is the earliest source.
-// A dashboard category is one event. Each TeleCRM capture with its own time is kept.
-// Page hits are used only when there is no category and no TeleCRM capture.
-// lead_recapture is never stored.
+// The same label stays one row until a later event is more than 24 hours
+// after the previous kept row of that label. lead_recapture is never stored.
+const SOURCE_RETURN_MS = 24 * 60 * 60 * 1000;
 function fifoSourceHistory(entries) {
-  const kept = [];
+  const pending = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
     if (!entry || canonicalBlank(entry.source)) continue;
     const label = canonicalNorm(entry.source);
-    if (!label || label === 'others' || label === 'lead_recapture') continue;
-    const key = label + '|' + String(toMs(entry.occurred_at) || '');
-    const index = kept.findIndex((prev) => (
-      canonicalNorm(prev.source) + '|' + String(toMs(prev.occurred_at) || '') === key
-    ));
-    if (index >= 0) kept[index] = mergeSourceEntries(kept[index], entry);
-    else kept.push(entry);
+    if (!label || label === 'lead_recapture') continue;
+    pending.push(entry);
   }
-  return kept
-    .map((entry, sequence) => ({ entry, sequence }))
-    .sort(compareHistoryOldestFirst)
-    .map((item) => item.entry);
+  pending.sort((left, right) => {
+    const leftMs = toMs(left.occurred_at);
+    const rightMs = toMs(right.occurred_at);
+    if (leftMs != null && rightMs != null && leftMs !== rightMs) return leftMs - rightMs;
+    if (leftMs != null && rightMs == null) return -1;
+    if (leftMs == null && rightMs != null) return 1;
+    return 0;
+  });
+  const kept = [];
+  for (const entry of pending) {
+    const label = canonicalNorm(entry.source);
+    const ms = toMs(entry.occurred_at);
+    let last = -1;
+    for (let i = kept.length - 1; i >= 0; i--) {
+      if (canonicalNorm(kept[i].source) === label) { last = i; break; }
+    }
+    if (last >= 0) {
+      const prev = toMs(kept[last].occurred_at);
+      if (ms == null || prev == null || Math.abs(ms - prev) <= SOURCE_RETURN_MS) {
+        kept[last] = mergeSourceEntries(kept[last], entry);
+        continue;
+      }
+    }
+    kept.push(entry);
+  }
+  return kept;
+}
+function websiteFields(doc) {
+  const src = doc && typeof doc === 'object' && !Array.isArray(doc) ? doc : {};
+  const out = {};
+  canonicalPut(out, 'utm_source', firstDefined(src.utmSource, src.utm_source));
+  canonicalPut(out, 'utm_medium', firstDefined(src.utmMedium, src.utm_medium));
+  canonicalPut(out, 'utm_term', firstDefined(src.utmTerm, src.utm_term));
+  canonicalPut(out, 'campaign_name', firstDefined(src.campaign_name, src.utmCampaign, src.utm_campaign, src.campaign));
+  canonicalPut(out, 'ad_set_name', firstDefined(src.ad_set_name, src.utmAdgroup, src.utm_adgroup));
+  canonicalPut(out, 'ad_name', firstDefined(src.ad_name, src.utmContent, src.utm_content, src.ad));
+  canonicalPut(out, 'ad_set_id', firstDefined(src.ad_set_id, src.adSetId, src.utm_adgroup_id));
+  canonicalPut(out, 'lead_id', firstDefined(src.lead_id, src.leadId));
+  return out;
+}
+function applyWebsiteFields(events, doc) {
+  const fields = websiteFields(doc);
+  const aliases = {
+    utm_source: ['utmSource'],
+    utm_medium: ['utmMedium'],
+    utm_term: ['utmTerm'],
+    campaign_name: ['utm_campaign', 'utmCampaign', 'campaign'],
+    ad_set_name: ['utm_adgroup', 'utmAdgroup'],
+    ad_name: ['utm_content', 'utmContent', 'ad'],
+    ad_set_id: ['utm_adgroup_id', 'adSetId'],
+    lead_id: ['leadId'],
+  };
+  for (const entry of Array.isArray(events) ? events : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const label = canonicalNorm(entry.source);
+    if (label && label !== 'meta_form' && label !== 'meta_ctwa') {
+      for (const key of Object.keys(aliases)) {
+        if (!canonicalBlank(entry[key])) continue;
+        canonicalPut(entry, key, firstDefined(...aliases[key].map((name) => entry[name]), fields[key]));
+      }
+    }
+    delete entry.utm_campaign;
+    delete entry.utm_content;
+    delete entry.utm_adgroup;
+  }
+}
+function resolvedWebsiteAnalytics(touchpoints, visitor, user) {
+  const wa = user && user.webAnalytics && typeof user.webAnalytics === 'object' && !Array.isArray(user.webAnalytics) ? user.webAnalytics : {};
+  const rows = (Array.isArray(touchpoints) ? touchpoints : []).filter((row) => row && typeof row === 'object' && attributionSignal(row));
+  const firstTP = rows[0] || {};
+  const v = visitor && typeof visitor === 'object' ? visitor : {};
+  return {
+    utmSource: firstDefined(wa.utmSource, wa.utm_source, firstTP.utm_source, v.first_utm_source, v.last_utm_source, v.utm_source),
+    utmMedium: firstDefined(wa.utmMedium, wa.utm_medium, firstTP.utm_medium, v.first_utm_medium, v.last_utm_medium, v.utm_medium),
+    utmCampaign: firstDefined(wa.utmCampaign, wa.utm_campaign, firstTP.utm_campaign, v.first_utm_campaign, v.last_utm_campaign, v.utm_campaign),
+    utmAdgroup: firstDefined(wa.utmAdgroup, wa.utm_adgroup, firstTP.utm_adgroup, v.first_utm_adgroup, v.last_utm_adgroup, v.utm_adgroup),
+    utmContent: firstDefined(wa.utmContent, wa.utm_content, firstTP.utm_content, v.last_utm_content, v.utm_content),
+    utmTerm: firstDefined(wa.utmTerm, wa.utm_term, firstTP.utm_term, v.first_utm_term, v.last_utm_term, v.utm_term),
+  };
+}
+function analyticsHasSignal(doc) {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return false;
+  return !canonicalBlank(firstDefined(
+    doc.utm_source, doc.utmSource,
+    doc.utm_medium, doc.utmMedium,
+    doc.utm_campaign, doc.utmCampaign,
+    doc.utm_term, doc.utmTerm,
+    doc.utm_content, doc.utmContent,
+    doc.utm_adgroup, doc.utmAdgroup,
+    doc.referrer, doc.web_referred, doc.web_referrer, doc.referred_by,
+    doc.gclid
+  ));
+}
+function dashFromDropdown(value) {
+  const mapped = {
+    performance: 'dash_performance',
+    advertisement: 'dash_performance',
+    customer: 'dash_customer',
+    referral: 'dash_customer',
+    organic: 'dash_organic',
+    clinician: 'dash_consultant',
+    doctor: 'dash_consultant',
+    advocate: 'dash_advocate',
+    founder: 'dash_founder',
+  };
+  return mapped[canonicalNorm(value)] || null;
+}
+function pinOrigin(rows, label) {
+  if (canonicalBlank(label)) return rows;
+  const index = rows.findIndex((row) => canonicalNorm(row && row.source) === canonicalNorm(label));
+  if (index <= 0) return rows;
+  const [row] = rows.splice(index, 1);
+  rows.unshift(row);
+  return rows;
 }
 function buildSourceHistory(existing, telecrm, touchpoints = [], visitor = null, user = null) {
   const events = [];
-  const categoryLabel = categoryCaptureLabel(user && user.category, visitor);
-  if (categoryLabel) {
-    const entry = { source: categoryLabel };
-    const occurredIso = toIso(user && firstDefined(user.createdAt, user.updatedAt));
-    if (occurredIso) entry.occurred_at = occurredIso;
-    events.push(entry);
+  const websiteAnalytics = resolvedWebsiteAnalytics(touchpoints, visitor, user);
+  const userAnalytics = user && user.webAnalytics && typeof user.webAnalytics === 'object' && !Array.isArray(user.webAnalytics)
+    ? user.webAnalytics
+    : null;
+  const analyticsDoc = analyticsHasSignal(userAnalytics) ? userAnalytics : (analyticsHasSignal(websiteAnalytics) ? websiteAnalytics : null);
+  let originLabel = null;
+  if (analyticsDoc) {
+    const payload = {
+      utm_source: firstDefined(analyticsDoc.utmSource, analyticsDoc.utm_source),
+      utm_medium: firstDefined(analyticsDoc.utmMedium, analyticsDoc.utm_medium),
+      utm_campaign: firstDefined(analyticsDoc.utmCampaign, analyticsDoc.utm_campaign),
+      utm_term: firstDefined(analyticsDoc.utmTerm, analyticsDoc.utm_term),
+      referrer: firstDefined(analyticsDoc.referrer, analyticsDoc.web_referred, analyticsDoc.web_referrer),
+      gclid: analyticsDoc.gclid,
+    };
+    const labeled = sourceEvent(payload, {
+      origin: 'users_analytics_view',
+      occurred_at: firstDefined(analyticsDoc.firstTouchAt, analyticsDoc.lastTouchAt, user && firstDefined(user.createdAt, user.updatedAt)),
+    });
+    const published = publishCapture(labeled);
+    if (published) {
+      events.push(published);
+      originLabel = published.source;
+    }
+  }
+  if (!events.length && canonicalNorm(user && user.category) === 'website') {
+    const published = publishCapture(sourceEvent({}, {
+      forced_source: 'website_organic',
+      origin: 'dash_category',
+      occurred_at: user && firstDefined(user.createdAt, user.updatedAt),
+    }));
+    if (published) {
+      events.push(published);
+      originLabel = published.source;
+    }
   }
 
   const leadRows = Array.isArray(telecrm && telecrm.lead_source)
@@ -850,31 +1020,105 @@ function buildSourceHistory(existing, telecrm, touchpoints = [], visitor = null,
     if (index === sourceRows.length - 1) Object.assign(defaults, marketing);
     consider(raw, defaults);
   });
-  for (const entry of coalesceTelecrmSourceEvents(captured)) {
-    const published = publishCapture(entry);
-    if (published) events.push(published);
+  const channelLabels = new Set(['meta_form', 'manual', 'meta_ctwa', 'website']);
+  const channelEvents = coalesceTelecrmSourceEvents(captured)
+    .map((entry) => publishCapture(entry))
+    .filter((entry) => entry && channelLabels.has(canonicalNorm(entry.source)));
+  if (!events.length) {
+    for (const entry of channelEvents) events.push(entry);
+  } else {
+    const floor = toMs(events[0].occurred_at);
+    for (const entry of channelEvents) {
+      const label = canonicalNorm(entry.source);
+      if (label === 'website' || label === canonicalNorm(originLabel)) continue;
+      const ms = toMs(entry.occurred_at);
+      if (floor != null && (ms == null || ms <= floor)) continue;
+      events.push(entry);
+    }
+  }
+  if (!events.length) {
+    let chosen = null;
+    for (const row of sourceRows) {
+      const raw = row && typeof row === 'object' ? row : { value: row };
+      const label = dashFromDropdown(firstDefined(raw.value, raw.tele_source, typeof raw.source === 'string' ? raw.source : null));
+      if (!label) continue;
+      const occurred = firstDefined(raw.occurred_at, raw.date, raw.dateISO, raw.ts);
+      const nextMs = toMs(occurred);
+      const chosenMs = chosen ? toMs(chosen.occurred) : null;
+      if (!chosen || (chosenMs == null && nextMs != null) || (chosenMs != null && nextMs != null && nextMs < chosenMs)) {
+        chosen = { label, occurred, raw };
+      }
+    }
+    if (chosen) {
+      const published = publishCapture(sourceEvent(chosen.raw, {
+        origin: 'telecrm_source',
+        forced_source: chosen.label,
+        occurred_at: chosen.occurred,
+        tele_source_value: firstDefined(chosen.raw.value, chosen.raw.tele_source, typeof chosen.raw.source === 'string' ? chosen.raw.source : null),
+      }));
+      if (published) {
+        events.push(published);
+        originLabel = published.source;
+      }
+    }
+  }
+  if (!events.length) {
+    let dropdown = '';
+    for (let i = sourceRows.length - 1; i >= 0; i--) {
+      const raw = sourceRows[i] && typeof sourceRows[i] === 'object' ? sourceRows[i] : { value: sourceRows[i] };
+      dropdown = firstDefined(raw.value, raw.tele_source, typeof raw.source === 'string' ? raw.source : null) || '';
+      if (!canonicalBlank(dropdown)) break;
+    }
+    const lead = leadSourceString(telecrm || {});
+    const unclassified = [lead, dropdown].some((value) => {
+      const key = canonicalNorm(value);
+      return key && key !== 'app';
+    });
+    if (unclassified) {
+      const published = publishCapture(sourceEvent({}, {
+        forced_source: 'others',
+        origin: 'unclassified',
+        occurred_at: firstDefined(telecrm && telecrm.created_at, telecrm && telecrm.createdAt, user && user.createdAt),
+      }));
+      if (published) {
+        events.push(published);
+        originLabel = published.source;
+      }
+    }
   }
 
-  if (!events.length) {
-    const webRows = (Array.isArray(touchpoints) ? touchpoints : [])
-      .filter((row) => row && typeof row === 'object' && attributionSignal(row));
-    for (const row of webRows) {
-      const published = publishCapture(sourceEvent(row, { origin: 'web_touchpoint' }));
-      if (published) events.push(published);
-    }
-    if (!events.length && visitor && attributionSignal(visitor)) {
+  const floorMs = events.reduce((min, entry) => {
+    const ms = toMs(entry && entry.occurred_at);
+    if (ms == null) return min;
+    return min == null || ms < min ? ms : min;
+  }, null);
+  const webRows = (Array.isArray(touchpoints) ? touchpoints : [])
+    .filter((row) => row && typeof row === 'object' && attributionSignal(row));
+  for (const row of webRows) {
+    const src = canonicalNorm(row.utm_source || row.utmSource);
+    const med = canonicalNorm(row.utm_medium || row.utmMedium);
+    if (!src && !med) continue;
+    const published = publishCapture(sourceEvent(row, { origin: 'web_touchpoint' }));
+    if (!published || canonicalNorm(published.source) === 'others' || canonicalNorm(published.source) === 'lead_recapture') continue;
+    const ms = toMs(published.occurred_at);
+    if (floorMs != null && (ms == null || ms <= floorMs)) continue;
+    events.push(published);
+  }
+
+  if (!events.length && visitor && attributionSignal(visitor)) {
       const published = publishCapture(sourceEvent({
         ...visitor,
         utm_source: firstDefined(visitor.first_utm_source, visitor.last_utm_source, visitor.utm_source),
         utm_medium: firstDefined(visitor.first_utm_medium, visitor.last_utm_medium, visitor.utm_medium),
         utm_campaign: firstDefined(visitor.first_utm_campaign, visitor.last_utm_campaign, visitor.utm_campaign),
+        utm_term: firstDefined(visitor.last_utm_term, visitor.utm_term),
         referrer: firstDefined(visitor.first_referrer, visitor.last_referrer, visitor.referrer),
         occurred_at: firstDefined(visitor.first_seen_at, visitor.createdAt),
       }, { origin: 'web_visitor' }));
       if (published) events.push(published);
-    }
   }
-  return fifoSourceHistory(events);
+  applyWebsiteFields(events, websiteAnalytics);
+  return pinOrigin(fifoSourceHistory(events), originLabel);
 }
 function sameSourceArray(left, right) {
   return JSON.stringify(Array.isArray(left) ? left : []) === JSON.stringify(Array.isArray(right) ? right : []);
@@ -995,7 +1239,7 @@ function buildStageHistory(existing, telecrmRows, currentTelecrmStatus, dashStat
       if (backfillIso) latestDash.occurred_at = backfillIso;
     }
   }
-  return output.sort(compareHistoryNewestFirst).map((item) => item.entry);
+  return collapseUnchangedStages(output);
 }
 async function getFirstVisitAppointments(db, userId) {
   return db.collection('appointments').aggregate([
@@ -1068,6 +1312,7 @@ async function joinDashboard(db, phone10) {
   out.dash_patientType = pd.patientType || null;
   out.dash_status = pd.status || null;
   out._dashCategory = pd.category || null;
+  out._webAnalytics = pd.webAnalytics && typeof pd.webAnalytics === 'object' && !Array.isArray(pd.webAnalytics) ? pd.webAnalytics : null;
   out._userCreatedAt = user.createdAt || null;
   out._dashStatusOccurredAt = firstDefined(user.updatedAt, user.createdAt) || null;
 
@@ -1474,23 +1719,32 @@ async function syncOne(rawPhone, options = {}) {
   const touchpoints = dash._touchpoints || []; delete dash._touchpoints;
   const webVisitor = dash._webVisitor || null; delete dash._webVisitor;
   const dashCategory = dash._dashCategory || null; delete dash._dashCategory;
+  const webAnalytics = dash._webAnalytics || null; delete dash._webAnalytics;
   const userCreatedAt = dash._userCreatedAt || null; delete dash._userCreatedAt;
   const dashOccurredAt = dash._dashStatusOccurredAt; delete dash._dashStatusOccurredAt;
   const telStatus = tel._telecrmStatus; delete tel._telecrmStatus;
 
   const apiFields = lead.fields || lead;
   const mirrorFields = mirror.fields && typeof mirror.fields === 'object' ? mirror.fields : {};
-  const fields = { ...mirror, ...mirrorFields, ...apiFields };
+  const mirrorWithoutSource = { ...mirror };
+  delete mirrorWithoutSource.source;
+  const mirrorFieldsWithoutSource = { ...mirrorFields };
+  delete mirrorFieldsWithoutSource.source;
+  const fields = { ...mirrorWithoutSource, ...mirrorFieldsWithoutSource, ...apiFields };
   if (Array.isArray(mirror.lead_source) && mirror.lead_source.length) fields.lead_source = mirror.lead_source;
-  if (Array.isArray(mirror.source) && mirror.source.length) fields.source = mirror.source;
   if (Array.isArray(mirror.stage) && mirror.stage.length) fields.stage = mirror.stage;
   const srcArr = buildSourceHistory(existing, fields, touchpoints, webVisitor, {
     category: dashCategory,
     createdAt: userCreatedAt,
+    webAnalytics,
   });
 
   const stageArrRaw = buildStageHistory(existing, fields.stage, telStatus, dash.dash_status, dashOccurredAt, new Date().toISOString());
-  const createdEpoch = toEpoch(tel.created_on);
+  // A re-sync must never move the join row's creation date later than it already is.
+  const createdCandidates = [tel.created_on, existing.created_on_epoch, existing.created_at]
+    .map(toEpoch)
+    .filter((ms) => ms != null && ms > 0);
+  const createdEpoch = createdCandidates.length ? Math.min(...createdCandidates) : null;
   const preservedTemperature = firstDefined(existing.temperature, existing.lead_temperature);
   const preservedCalculatedAt = firstDefined(existing.calculated_at, existing.temperature_calculated_at);
   const decision = finalizeTelecrmStatus({

@@ -1,0 +1,30 @@
+=[
+  { "$match": {
+      "firstVisitAppointments": { "$elemMatch": {
+        "status": { "$in": ["PAID", "INVOICE_GENERATED", "VISITED"] },
+        "startTime": {
+          "$gte": {{ $('Calculate Windows1').item.json.start_ms }},
+          "$lt":  {{ $('Calculate Windows1').item.json.end_ms }}
+        }
+      }}
+  }},
+  { "$addFields": {
+      "todayVisit": { "$arrayElemAt": [ { "$filter": {
+        "input": { "$ifNull": ["$firstVisitAppointments", []] },
+        "as": "a",
+        "cond": { "$and": [
+          { "$in": ["$a.status", ["PAID","INVOICE_GENERATED","VISITED"]] },
+          { "$gte": ["$a.startTime", {{ $('Calculate Windows1').item.json.start_ms }}] },
+          { "$lt":  ["$a.startTime", {{ $('Calculate Windows1').item.json.end_ms }}] }
+        ]}
+      }}, 0] }
+  }},
+  { "$project": { "_id": 0,
+      "phone": 1, "name": 1, "branch": 1,
+      "lead_source": 1, "source": 1,
+      "status": 1, "stage": 1, "created_at": 1, "created_on_epoch": 1, "created_on": 1,
+      "isConverted": 1,
+      "appt_status":   "$todayVisit.status",
+      "cancel_reason": "$todayVisit.cancellationReason"
+  }}
+]

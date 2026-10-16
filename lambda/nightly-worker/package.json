@@ -1,0 +1,21 @@
+{
+  "name": "telecrm-nightly-worker",
+  "private": true,
+  "description": "Paged nightly temperature and source worker. Runs on Lambda so the n8n EC2 does not hold the lead list.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node src/self-check.js",
+    "start": "node src/local.js start",
+    "continue": "node src/local.js continue",
+    "status": "node src/local.js status",
+    "dry-run": "node src/local.js continue --dry-run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.901.0",
+    "dotenv": "^17.4.2",
+    "mongodb": "^7.6.0"
+  }
+}

@@ -5269,3 +5269,1108 @@ The join stored one capture, so a dashboard category replaced earlier TeleCRM so
 - After the later backfill
 - confirm source[0].source is the earliest occurred_at and stage[0] is still the newest stage.
 
+
+## 2026-10-07 — Copy root Captured On into first interaction date
+
+**Agent:** Cursor Grok 4.7
+
+### Objective
+Store TeleCRM Captured On as telecrm_first_interaction_date when the date sits on the lead root.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- buildTeleCRMPart reads Captured On, Last Call, and First Attempted Call from the lead root and from fields.
+- WF1, WF3, and main prod flattenLeadActivity copy those panel dates onto fields before the join write.
+- First Attempted Call and First Call set telecrm_first_call_done, matching the TeleCRM panel labels.
+
+### Reason
+Lead search returns Captured On beside fields. The join only copied call counts from the root, so the date was dropped and omitEmpty left the key off new-telecrm.
+
+### Validation
+- node --check new-telecrm-webhook.js — PASS
+- Root Captured On / First Attempted Call / Last Call mapping — PASS
+- validate_workflow_json — PASS
+- node scripts/validate-canonical-schema.js — FAIL at the existing Converted temperature assertion (should_write_temperature true). That scorer no longer skips Converted leads; this change does not touch it. The new root-date assertions run earlier and passed.
+
+### Risks / Notes
+- Existing rows stay without the date until the next sync of that phone. This change does not backfill.
+- Live n8n keeps the old reader until the three workflows are re-imported.
+
+### Manual Verification Required
+- Re-import 1-sync-webhook.json, 3-dashboard-to-telecrm.json, and main prod.json.
+- Re-sync 8910106375 and confirm new-telecrm.telecrm_first_interaction_date is set from Captured On.
+
+
+## 2026-10-09 — Push earliest source to TeleCRM
+
+**Agent:** AI coding agent
+
+### Objective
+Send new-telecrm source[0].source to TeleCRM on every sync when it differs, and backfill existing rows.
+
+### Files Created
+- `scripts/push-earliest-source.js`
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+- `scripts/lib/common.js`
+- `scripts/README.md`
+
+### Files Deleted
+- None
+
+### Changes
+- Workflow 1 sets should_push_source from source[0] versus TeleCRM fields.source and POSTs phone plus source after every upsert when they differ.
+- Workflow 3 does the same on the update branch even when status did not change
+- and adds source on create only when the earliest label exists.
+- Empty source is omitted. An exact match is skipped. dash_consultant and other stored labels are sent unchanged.
+- scripts/push-earliest-source.js dry-runs that comparison against the telecrm mirror; --apply posts the same body.
+
+### Reason
+TeleCRM source still showed the old dropdown values because sync stored the classified label only in Mongo.
+
+### Validation
+- node --check scripts/push-earliest-source.js — PASS
+- scripts/validate-canonical-schema.js — new source assertions PASS; pre-existing Converted temperature assertion still fails
+
+### Risks / Notes
+- Live n8n keeps the old push until 1-sync-webhook.json and 3-dashboard-to-telecrm.json are re-imported. main prod.json was not updated.
+- A source push uses the 10-digit phone already used by these workflows. It does not send status.
+- If TeleCRM stores a different string than the one we sent
+- the next sync will push again.
+
+### Manual Verification Required
+- Import new workflows/1-sync-webhook.json and new workflows/3-dashboard-to-telecrm.json. Do not import main prod.json for this change.
+- Dry-run node scripts/push-earliest-source.js
+- then --apply for previous leads.
+
+
+## 2026-10-12 — Read campaign from the live lead and store utm_term
+
+**Agent:** AI coding agent
+
+### Objective
+Stop copying campaign, ad, and ad set from the Mongo telecrm mirror. Take those fields from the live lead/search source array, and store utm_term from the website hit.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Omit mirror.source when building source history in the webhook, sync workflow, and dashboard workflow.
+- Copy utm_term next to utm_campaign on website source entries.
+- Assert the live lead wins over a different mirror campaign, and that a touchpoint utm_term is stored.
+
+### Reason
+The mirror source array was overriding the live TeleCRM lead, and utm_term was read from the website hit then discarded.
+
+### Validation
+- node scripts/validate-canonical-schema.js reaches the new source assertions, then fails on the existing Converted-lead temperature write check, which this change does not touch.
+
+### Risks / Notes
+- A sync whose live lead has no source array leaves campaign, ad, and ad set empty. The mirror source array is not a fallback.
+- Dashboard rebuilds no longer copy campaign fields from the Mongo telecrm document. Those fields are written when lead/search runs.
+- Stage history and the status-push phone still come from the Mongo telecrm document.
+
+### Manual Verification Required
+- Re-sync one Facebook phone and confirm campaign_name, ad_name, and ad_set_name match lead/search fields.source, not the Mongo telecrm source row.
+- Re-sync one google cpc website phone and confirm source[].utm_term matches web_touchpoints.utm_term.
+
+
+## 2026-10-12 — Store nested occurred_at as BSON Date
+
+**Agent:** AI coding agent
+
+### Objective
+Make source.occurred_at and stage.occurred_at persist as BSON Date, the same type as created_at.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Removed the extra brace so the canonical cleanup expression parses and its $toDate conversion of source.occurred_at and stage.occurred_at can run.
+- Wrote Mongo $$ variables with unicode escapes so the n8n expression keeps $$row, $$REMOVE, and $$ROOT.
+- Updated the schema check to decode those escapes and require nested occurred_at conversion.
+
+### Reason
+The cleanup aggregation that converts those nested timestamps was invalid JavaScript because of an extra closing brace, so n8n skipped it and the upsert left occurred_at as a string. Top-level fields such as created_at were still stored as dates.
+
+### Validation
+- Cleanup expressions in sync, dashboard, final-source, and main prod evaluate to a 6-stage pipeline that includes $$row.occurred_at and $toDate.
+- node scripts/validate.js passed JS syntax, workflow JSON, and MCP self-tests. Protected-file check fails because these workflow exports were edited. The pre-existing secret heuristic still flags scripts/sync-1000-users.js.
+- Canonical schema assertions for the cleanup passed; the suite still stops at the pre-existing Converted-temperature assertion.
+
+### Risks / Notes
+- Live n8n keeps the old string occurred_at values until these workflow exports are re-imported and a lead is synced again.
+- created_on_epoch stays an epoch number. It is not a date field.
+
+### Manual Verification Required
+- Re-import 1-sync-webhook.json, 3-dashboard-to-telecrm.json, 4-final-source.json, and main prod.json into n8n.
+- Sync one lead and confirm source.occurred_at and stage.occurred_at show as Date, the same type as created_at.
+
+
+## 2026-10-12 — Add backfill-recent-users.js for Stance patients missing from new-telecrm
+
+**Agent:** Cursor agent
+
+### Objective
+Backfill Stance patients created 8–12 Oct 2026 that never reached new-telecrm (125 patients; WF3 create path not producing rows).
+
+### Files Created
+- `scripts/backfill-recent-users.js`
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- New dry-run-by-default script: finds PATIENT users created in an IST date window missing from new-telecrm.
+- --apply writes new-telecrm via syncOne using mirror lead or a synthetic lead (WF3 status map).
+- --create-in-telecrm first creates the lead in TeleCRM via autoupdatelead with the WF3 create payload.
+
+### Reason
+Sync (1) returns 404 for phones without a TeleCRM lead, so dashboard-only patients never get a join row; WF3 create branch is not filling the gap in production.
+
+### Validation
+- node --check passed
+- Dry run on prod stance-dashboard: 191 patients, 66 present, 125 missing
+- --apply --create-in-telecrm --limit 1 on 9619277055: autoupdatelead accepted, new-telecrm row inserted
+
+### Risks / Notes
+- Test lead 9619277055 had not appeared in the telecrm mirror several minutes after create; no dashboard_field leads have reached the mirror since 2026-04-27. Full run paused until the lead is confirmed in TeleCRM.
+- Many patients have placeholder name 'Lead' (same as WF3 would push).
+
+### Manual Verification Required
+- Confirm 9619277055 exists in TeleCRM UI before running the full backfill.
+
+
+## 2026-10-12 — Keep earliest created date on new-telecrm re-sync; backfill uses 91 phone and Stance createdAt
+
+**Agent:** Cursor agent
+
+### Objective
+Backfill 8–12 Oct Stance patients into TeleCRM without new-telecrm losing their original creation date.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/backfill-recent-users.js`
+
+### Files Deleted
+- None
+
+### Changes
+- WF1 Build Document (and main prod copy): createdRaw is the earliest of TeleCRM created_on/created_at/createdAt and the existing row's created_on_epoch/created_at.
+- syncOne: createdEpoch is the earliest of tel.created_on and the existing row's created_on_epoch/created_at.
+- Backfill script: TeleCRM create sends phone as 91+10 digits (bare 10-digit creates are silently dropped); sends Captured On (TeleCRM ignores it); passes the earlier of lead and Stance createdAt as created_on; new --phone and --no-captured-on options.
+
+### Reason
+TeleCRM stamps created date at creation and ignores Captured On; Sync then replaced the join row's created_on_epoch with TeleCRM's date. User approved editing 1-sync-webhook.json, main prod.json and new-telecrm-webhook.js.
+
+### Validation
+- node --check on webhook and script
+- WF1 / main prod Build Document code compiles
+- validate-canonical-schema.js fails at 'Converted leads must skip writes' with and without these edits (pre-existing)
+- Tests: 7795415689 created with 91 phone reached the telecrm mirror in 30s
+
+### Risks / Notes
+- Live n8n Sync must be updated with the new 1-sync-webhook.json before the full backfill, or re-syncs overwrite dates again.
+- If the EC2 webhook runs new-telecrm-webhook.js, it must be redeployed too.
+- 9619277055 and 7795415689 currently show 12 Oct in new-telecrm; re-run the script with --phone for both after deploy.
+
+### Manual Verification Required
+- Import updated 1-sync-webhook.json into live n8n (or apply the one-line createdRaw change) and redeploy the EC2 webhook if it runs the JS.
+- Then: node scripts/backfill-recent-users.js --apply --create-in-telecrm --phone 9619277055 --phone 7795415689
+- Then: node scripts/backfill-recent-users.js --from 2026-10-08 --apply --create-in-telecrm
+
+
+## 2026-10-12 — WF3: create a TeleCRM lead for every new Stance patient (91 phone, wait + mirror re-check)
+
+**Agent:** Cursor agent
+
+### Objective
+Every users insert creates a TeleCRM lead; existing users with a lead / new-telecrm row keep the unchanged update path.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Check Status & Extract: on insert, a PATIENT with no profileData.status is treated as LEAD so the create still runs.
+- Finalize Status Decision: create branch and the follow-up name push (no mirror lead yet) send '91' + phone10. Update branch still uses the stored mirror phone (unchanged).
+- New nodes after 'Should Create Lead?': Wait for TeleCRM Mirror (90s) -> Re-check TeleCRM Mirror -> Still No TeleCRM Lead? -> Push Create to TeleCRM, so website signups whose lead is still syncing are not duplicated.
+- validate-canonical-schema.js: wiring assertions updated for the new create chain plus 91/mirrorPhone checks.
+
+### Reason
+Walk-in / dashboard-only patients never got TeleCRM leads; bare 10-digit autoupdatelead creates do not land, 91+10 digits does (verified 7795415689, mirror in 30s).
+
+### Validation
+- Local replay of WF3 code nodes with prod data: existing patient 9445210899 (update and insert events) output identical before/after
+- New patient 2189347568: create mode, phone 912189347568; also creates when inserted without a status
+- All WF3 code nodes compile; all connections point to existing nodes; node ids unique
+- validate-canonical-schema.js only fails at the pre-existing 'Converted leads must skip writes'
+
+### Risks / Notes
+- Not deployed: live n8n must import the updated 3-dashboard-to-telecrm.json and set the Mongo credential on the new Re-check TeleCRM Mirror node.
+- main prod.json's dashboard half is an older version with no create branch; if that is what runs live, it must be replaced by WF3.
+- If a user is inserted already BOOKED and the website lead appears during the wait, the create is skipped and the booked status is not pushed until the next status change.
+
+### Manual Verification Required
+- Import WF3 into n8n, set credentials, activate, then create a test patient with a real 6-9 mobile number and confirm the lead in TeleCRM and the row in new-telecrm.
+
+
+## 2026-10-12 — WF3 create re-check asks TeleCRM lead/search instead of the telecrm mirror
+
+**Agent:** Cursor agent
+
+### Objective
+Remove the create branch's dependency on the telecrm collection.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/3-dashboard-to-telecrm.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Replaced 'Re-check TeleCRM Mirror' (Mongo telecrm) with 'Re-check TeleCRM Lead' (HTTP lead/search, 91 + phone, TeleCRM Sync Token credential, neverError false).
+- Renamed 'Wait for TeleCRM Mirror' to 'Wait for TeleCRM Lead'; wait 60s.
+- 'Still No TeleCRM Lead?' now checks the search response data array is empty.
+- Validator assertions updated.
+
+### Reason
+User is phasing out the telecrm collection.
+
+### Validation
+- Connections reference existing nodes; ids unique; code nodes compile
+- Gate: empty data -> create, lead found -> skip
+- Existing patient replay identical to baseline
+- validate-canonical-schema.js only fails at pre-existing 'Converted leads must skip writes'
+
+### Risks / Notes
+- 'Find TeleCRM Mirror' (update vs create decision) still reads the telecrm collection.
+- Needs the TeleCRM Sync Token credential set on the new node after import.
+
+### Manual Verification Required
+- Re-import WF3, set TeleCRM Sync Token + Mongo credentials, activate, test with a real 6-9 mobile number.
+
+
+## 2026-10-12 — Store website campaign fields on source rows
+
+**Agent:** AI coding agent
+
+### Objective
+Copy users web analytics onto new-telecrm source entries so website and other non-Facebook sources store campaign_name, ad_set_name, ad_name, and utm_term.
+
+### Files Created
+- None
+
+### Files Modified
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Map utmCampaign to campaign_name, utmAdgroup to ad_set_name, utmContent to ad_name, and utmTerm to utm_term.
+- Fill those blanks on every source row except meta_form and meta_ctwa, without replacing Facebook values.
+- Read users.profileData.webAnalytics in the webhook and dashboard builder, and the analytics view in the sync and final-source builders.
+
+### Reason
+Website users already have utmCampaign, utmAdgroup, utmContent, and utmTerm on users.profileData.webAnalytics, but a website or TeleCRM capture dropped those values before they were written.
+
+### Validation
+- node --check new-telecrm-webhook.js
+- node scripts/validate-canonical-schema.js reaches the pre-existing Converted temperature assertion; the new website and Facebook-protection assertions pass.
+
+### Risks / Notes
+- utmContent is stored as ad_name and can be a numeric id.
+- A Manual or dash source row with blank campaign fields receives the same website analytics as the website row.
+- Hosted n8n workflows do not pick this up until the JSON is re-imported.
+
+### Manual Verification Required
+- Re-import the sync, dashboard, main, and final-source workflows before a hosted run uses the new mapping.
+- A from-mirror backfill of a website phone such as 7387526211 should show campaign_name and ad_set_name on the website source row.
+
+
+## 2026-10-12 — Use Facebook source field names for every source
+
+**Agent:** AI coding agent
+
+### Objective
+Use the Facebook source field names for every source so campaign_name, ad_name, ad_set_name, ad_set_id, and lead_id can be queried the same way.
+
+### Files Created
+- None
+
+### Files Modified
+- `.agent/backfill-new-telecrm-progress-stance-dashboard.json`
+- `AGENT_CHANGELOG.md`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Store campaign, ad, ad set, lead id, and ad set id under the Facebook field names on every source.
+- Drop utm_campaign, utm_term, and the other utm_* keys from source entries so a query on campaign_name, ad_name, ad_set_name, ad_set_id, and lead_id matches Facebook, website, Google, and GMB rows.
+- Leave meta_form and meta_ctwa values in place.
+
+### Reason
+Website and Google rows were storing the campaign as utm_campaign while Facebook stored campaign_name, so one query could not cover both.
+
+### Validation
+- node --check new-telecrm-webhook.js
+- node scripts/validate-canonical-schema.js passes the new field-name assertions and still stops on the pre-existing Converted temperature check.
+
+### Risks / Notes
+- utm_term is no longer stored, because it is not one of the Facebook source fields.
+- Website rows omit lead_id and ad_set_id when the analytics object has no id.
+- The pre-existing Converted temperature assertion still fails.
+
+### Manual Verification Required
+- Re-run the five-phone backfill to rewrite source rows with the standard names.
+- Re-import hosted workflows only after the backfill looks right.
+
+
+## 2026-10-12 — Store utm source and medium on source rows
+
+**Agent:** AI coding agent
+
+### Objective
+Store utm source, medium, and term from web analytics on new-telecrm source rows.
+
+### Files Created
+- None
+
+### Files Modified
+- `.agent/backfill-new-telecrm-progress-stance-dashboard.json`
+- `AGENT_CHANGELOG.md`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `new-telecrm-webhook.js`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Write webAnalytics utmSource, utmMedium, and utmTerm onto source rows as utm_source, utm_medium, and utm_term.
+- Keep campaign, ad, and ad set under campaign_name, ad_name, and ad_set_name, and do not also store utm_campaign.
+
+### Reason
+The backfill had the values on users.profileData.webAnalytics but deleted utm_source and utm_medium before writing the source row.
+
+### Validation
+- node --check new-telecrm-webhook.js
+- Schema checks for utm_source, utm_medium, and utm_term pass. The pre-existing Converted temperature assertion still fails.
+
+### Risks / Notes
+- None
+
+### Manual Verification Required
+- Re-run the five-phone backfill. The website source row should now include utm_source and utm_medium.
+
+
+## 2026-10-14 — Backfill missing meta_form lead into new-telecrm
+
+**Agent:** AI coding agent
+
+### Objective
+Insert Facebook/meta_form TeleCRM leads that exist in the production telecrm mirror but have no new-telecrm row.
+
+### Files Created
+- None
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- None
+
+### Reason
+Phone 9980203149 (Facebook lead, 9 Oct 2026) was in stance-dashboard.telecrm with no join row. The other 5 Facebook mirror leads without a join row have malformed 11-14 digit phones and cannot be joined. Separately, 132 of 143 meta_form rows created since 6 Oct store created_at as an ISO string (live n8n still runs the pre-$toDate WF1/WF3), so Compass sort {created_at:-1} hides them below BSON Date rows.
+
+### Validation
+- None
+
+### Risks / Notes
+- None
+
+### Manual Verification Required
+- None
+
+
+## 2026-10-14 — Convert string join dates to BSON Date
+
+**Agent:** AI coding agent
+
+### Objective
+Rewrite the 1,109 production new-telecrm rows that stored created_at as ISO text so Compass sort by created_at shows October leads.
+
+### Files Created
+- None
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- None
+
+### Reason
+After the user re-imported and published WF1/WF3, ran updateMany on stance-dashboard.new-telecrm for created_at type string. Converted created_at, modified_at, last_synced_at, calculated_at, dash_dob, telecrm interaction dates, and source/stage occurred_at to Date. matched=1109 modified=1109 remaining string created_at=0.
+
+### Validation
+- None
+
+### Risks / Notes
+- None
+
+### Manual Verification Required
+- None
+
+
+## 2026-10-14 — Fix n8n invalid syntax on date cleanup aggregate
+
+**Agent:** AI coding agent
+
+### Objective
+Stop Remove Legacy Root CTWA from returning invalid syntax so join dates convert to BSON Date after upsert.
+
+### Files Created
+- None
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- None
+
+### Reason
+n8n 2.x truncates huge ={{ }} Mongo aggregate expressions at the first }}, so JSON.parse fails with invalid syntax while onError continueRegularOutput hid the failure and left created_at as ISO text. Moved pipeline construction into a Code node (Build Date Cleanup Pipeline) and left the Mongo query as ={{ $json.cleanupPipeline }}. Updated WF1, WF3, WF4, and main prod; fail loudly on cleanup errors; converted 40 leftover string created_at rows in production.
+
+### Validation
+- None
+
+### Risks / Notes
+- None
+
+### Manual Verification Required
+- None
+
+
+## 2026-10-14 — Lambda zips for nightly jobs and Slack report
+
+**Agent:** AI coding agent
+
+### Objective
+Give uploadable Lambda zips so the morning temperature, source, and new-telecrm Slack jobs leave the n8n EC2.
+
+### Files Created
+- `lambda/nightly-worker`
+- `lambda/slack-report`
+
+### Files Modified
+- `.gitignore`
+
+### Files Deleted
+- None
+
+### Changes
+- Nightly zip pages temperature then source and writes with replace so the realtime trigger does not fan out.
+- Slack zip is the 8:30 IST new-telecrm report: summary plus HTML. PDF only if GOTENBERG_URL is set.
+- Both zips put index.mjs and node_modules at the zip root. Handler is index.handler.
+
+### Reason
+The n8n process dies when those jobs load every lead into one execution. Lambda pages the work and the Slack report posts without Gotenberg unless a public URL is set.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js — PASS
+- Slack query compile for 2026-10-13 — PASS
+- node scripts/validate.js — FAIL only on pre-existing scripts/sync-1000-users.js
+
+### Risks / Notes
+- DRY_RUN must stay true until a test page looks right.
+- Slack PDF needs a Gotenberg URL Lambda can reach. http://gotenberg:3000 is only on the n8n host.
+- Turn off the n8n Nightly Temperature Run and Nightly Source Attribution Run only after a good night. Leave the realtime trigger and the Slack schedule until the Lambda posts.
+
+### Manual Verification Required
+- Upload lambda/zips/nightly-worker.zip and lambda/zips/slack-report.zip. Set env from each UPLOAD.txt. Test with a new request id.
+
+
+## 2026-10-15 — Backfill earliest source to google_cpc
+
+**Agent:** AI coding agent
+
+### Objective
+Set new-telecrm source[0] to google_cpc for Google CPC users whose earliest source was website.
+
+### Files Created
+- `scripts/backfill-google-cpc-earliest.js`
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- Added a dry-run-by-default script that updates only source[0].source
+- utm_source
+- and utm_medium when the earliest source is website.
+- Applied it on stance-development: 614 rows changed from website to google_cpc. Later source rows were left in place.
+- Skipped 13 CPC users: 6 with no new-telecrm row
+- 4 dash_customer
+- 2 meta_form
+- 1 dash_organic.
+
+### Reason
+Dashboard category WEBSITE was winning over utmSource google and utmMedium cpc, so those leads were stored as website.
+
+### Validation
+- node scripts/backfill-google-cpc-earliest.js — PASS
+- would-update 0 and 614 earliest google_cpc
+- node --check scripts/backfill-google-cpc-earliest.js — PASS
+- apply matched 614 modified 614
+
+### Risks / Notes
+- A later full source rebuild with the current classifier will write website again until the category rule is changed.
+- This did not push source to TeleCRM.
+- The one 4-event row still has lead_recapture as source[1].
+
+### Manual Verification Required
+- Hold the nightly source job off this cohort until the classifier treats google plus cpc as google_cpc even when the dashboard category is WEBSITE.
+
+
+## 2026-10-15 — Backfill google_cpc on stance-dashboard
+
+**Agent:** AI coding agent
+
+### Objective
+Apply the same earliest-source google_cpc backfill on production stance-dashboard.
+
+### Files Created
+- None
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- Ran the backfill against stance-dashboard through MONGODB_URI_PRODUCTION.
+- Updated 771 new-telecrm rows whose earliest source was website to google_cpc and stored utm_source google plus utm_medium cpc on that row.
+- Left 34 CPC users unchanged: 24 with no new-telecrm row; 4 dash_customer; 2 dash_organic; 2 meta_form; 1 website_organic. One row was already google_cpc.
+
+### Reason
+The first run wrote stance-development. The 800-plus CPC leads live on stance-dashboard.
+
+### Validation
+- Dry-run before apply showed 805 CPC users and 771 website earliest rows.
+- Apply matched 771 and modified 771.
+- Dry-run after apply showed 0 remaining website earliest rows and 772 earliest google_cpc.
+
+### Risks / Notes
+- A later full source rebuild with the current classifier will write website again until the category rule is changed.
+- This did not push source to TeleCRM.
+
+### Manual Verification Required
+- Hold the nightly source job off this cohort until the classifier treats google plus cpc as google_cpc even when the dashboard category is WEBSITE.
+
+
+## 2026-10-15 — Keep a new source row when the same channel returns after 24 hours
+
+**Agent:** AI coding agent
+
+### Objective
+Store a new new-telecrm source row when the same label comes back more than 24 hours later. Leave TeleCRM unchanged.
+
+### Files Created
+- None
+
+### Files Modified
+- `lambda/nightly-worker/src/attribute-lead.js`
+- `lambda/nightly-worker/src/pipelines.js`
+- `lambda/nightly-worker/src/self-check.js`
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Same label within 24 hours stays one source row and keeps the earlier occurred_at.
+- Same label more than 24 hours later is appended.
+- Touchpoints with a blank utm source and blank utm medium are skipped.
+- A touchpoint at or before the earliest existing event cannot become source[0].
+- TeleCRM autoupdate and NEW_TELECRM_PUSH_SOURCE were not enabled.
+
+### Reason
+A return on the same channel was collapsed into one row. Visits more than a day apart should stay in the history.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js passed
+- node --check passed on the webhook and nightly source files
+- scripts/validate-canonical-schema.js reached the pre-existing Converted temperature assertion
+
+### Risks / Notes
+- A later full source rebuild still lets a Website category beat google/cpc at source[0] and can undo the google_cpc backfill.
+- Repo workflow files change new-telecrm only after they are imported into n8n or the webhook and nightly worker are deployed.
+
+### Manual Verification Required
+- Import the updated workflows before n8n uses the 24-hour rule.
+- Do not turn on NEW_TELECRM_PUSH_SOURCE.
+
+
+## 2026-10-15 — Choose source zero from the visit before the dashboard category
+
+**Agent:** AI coding agent
+
+### Objective
+Make source[0] the analytics origin when web analytics has a utm, referrer, or gclid, including when the dashboard category is WEBSITE. Do not rewrite stored rows and do not push TeleCRM.
+
+### Files Created
+- None
+
+### Files Modified
+- `lambda/nightly-worker/src/attribute-lead.js`
+- `lambda/nightly-worker/src/self-check.js`
+- `new-telecrm-webhook.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- source[0] is the analytics label when web analytics has a utm, a referrer, or a gclid.
+- website_organic is used only when the category is website and that analytics check found nothing.
+- meta_form, Manual, and meta_ctwa come from telecrm.lead_source when there was no website visit.
+- dash_* comes from the TeleCRM source dropdown value.
+- others is stored when a value is present and none of those labels match.
+- NEW_TELECRM_PUSH_SOURCE stays off and no backfill was run.
+
+### Reason
+The builders were still naming a WEBSITE category website before they looked at google cpc, so the next rebuild would have replaced the earliest google_cpc label.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js passed
+- scripts/validate-canonical-schema.js passed the source cases and stopped on the pre-existing Converted temperature assertion
+
+### Risks / Notes
+- Imported workflow 1 and workflow 3 still compute should_push_source when source[0] differs from the TeleCRM dropdown. The push stays off unless those workflows are run.
+- A referrer that matches no known channel is stored as others.
+
+### Manual Verification Required
+- Import the updated workflows before n8n uses the new origin order.
+- Do not turn on NEW_TELECRM_PUSH_SOURCE.
+
+
+## 2026-10-16 — Skip temperature for Converted and Not Converted
+
+**Agent:** AI coding agent
+
+### Objective
+Stop scoring and pushing temperature for TeleCRM statuses Converted and Not Converted.
+
+### Files Created
+- None
+
+### Files Modified
+- `AGENT_CONTEXT.md`
+- `lambda/nightly-worker/src/score-temperature.js`
+- `lambda/nightly-worker/src/self-check.js`
+- `new workflows/4-temperature-realtime.json`
+- `new workflows/CROSS-PLATFORM-ACTIONS.csv`
+- `new workflows/CROSS-PLATFORM-ACTIONS.md`
+
+### Files Deleted
+- None
+
+### Changes
+- calculateTemperature returns no score and should_write_temperature false when the live status is Converted or Not Converted, case-insensitive.
+- The same gate is in both Calculate Temperature nodes in 4-temperature-realtime.json, so realtime and nightly skip the TeleCRM POST and the join write.
+- Open stages, including Session booked, still use the three-question score and the unanswered-call COLD override.
+- Existing temperature already stored on Converted or Not Converted leads is left in place.
+
+### Reason
+Those closed stages were still receiving a temperature on TeleCRM from the realtime scorer.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js — converted and not converted are not scored
+- node --check on score-temperature.js
+- Both workflow scorer nodes parse and contain the closed-status gate
+- validate_repo: js_ok and json_ok. Protected-file check flags the intentional workflow and action-matrix edits.
+
+### Risks / Notes
+- n8n keeps running the previously imported workflow until 4-temperature-realtime.json is re-imported.
+- Leads already marked hot, warm, or cold on TeleCRM stay that way; this change only stops new writes.
+
+### Manual Verification Required
+- Re-import new workflows/4-temperature-realtime.json into n8n and leave the realtime trigger on.
+- Confirm a Converted lead and a Not Converted lead produce no autoupdatelead temperature POST.
+- Confirm a Fresh or Session booked lead still receives HOT, WARM, or COLD with its current status.
+
+
+## 2026-10-16 — Store web analytics fields under their own names
+
+**Agent:** AI coding agent
+
+### Objective
+Copy every web_analytics value onto new-telecrm source rows using the web_analytics field name.
+
+### Files Created
+- None
+
+### Files Modified
+- `lambda/nightly-worker/src/attribute-lead.js`
+- `lambda/nightly-worker/src/self-check.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Write utmSource
+- utmMedium
+- utmCampaign
+- utmAdgroup
+- utmContent
+- utmTerm
+- firstTouchAt
+- lastTouchAt
+- landingPage
+- bookingUrl
+- gclid
+- referrer
+- fbp
+- fbc
+- utmReferer
+- anonymousId
+- totalSessions
+- and totalTouchpoints onto non-Facebook source rows.
+- Leave meta_form and meta_ctwa campaign
+- ad
+- and lead fields unchanged.
+- Keep occurred_at as the source-row time.
+
+### Reason
+web_analytics values were renamed to utm_source, campaign_name, ad_set_name, and ad_name, and the remaining analytics fields were dropped.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js — PASS
+
+### Risks / Notes
+- The nightly worker picks this up on its next source run. The webhook and n8n workflows still use the old names until those files are updated.
+- A source row can hold both campaign_name from TeleCRM and utmCampaign from web analytics.
+
+### Manual Verification Required
+- Re-run source attribution for a non-Facebook phone and confirm the source row uses utmSource and utmCampaign.
+
+
+## 2026-10-16 — Drop utmSource from copied analytics fields
+
+**Agent:** AI coding agent
+
+### Objective
+Keep the classified source label and stop writing web_analytics.utmSource onto the source row.
+
+### Files Created
+- None
+
+### Files Modified
+- `lambda/nightly-worker/src/attribute-lead.js`
+- `lambda/nightly-worker/src/self-check.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Remove utmSource from the fields copied onto new-telecrm source rows.
+- Leave source classification on the existing final-source list.
+- Keep the other web_analytics fields under their own names.
+
+### Reason
+utmSource was being stored beside source. The source label is already the final-source value, so the raw utm source does not need its own field.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js — PASS
+
+### Risks / Notes
+- A source row no longer has utmSource or utm_source from web analytics. The classified source value is unchanged.
+
+### Manual Verification Required
+- Re-run the one-phone attribution print. The row should show source google_cpc and utmMedium
+- and should not show utmSource.
+
+
+## 2026-10-16 — Keep deployed Lambda zips in lambda/zips
+
+**Agent:** AI coding agent
+
+### Objective
+Copy the three Lambda packages that are deployed today into the repo folder reserved for them.
+
+### Files Created
+- `lambda/zips/nightly-worker.zip`
+- `lambda/zips/nightly-worker (1).zip`
+- `lambda/zips/slack-report.zip`
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- Copied nightly-worker.zip
+- nightly-worker (1).zip
+- and slack-report.zip from Downloads into lambda/zips.
+
+### Reason
+The deployed packages were only in Downloads, so the source change had no local copy of what Lambda is running.
+
+### Validation
+- None
+
+### Risks / Notes
+- lambda/zips is gitignored. These copies are the 14 Oct packages and still use the old source field names.
+
+### Manual Verification Required
+- None. Uploading a zip to Lambda is a separate step.
+
+
+## 2026-10-16 — Put web analytics source logic in the nightly Lambda zips
+
+**Agent:** AI coding agent
+
+### Objective
+Replace the deployed nightly worker attribution file with the version that copies web_analytics fields onto source rows.
+
+### Files Created
+- None
+
+### Files Modified
+- None
+
+### Files Deleted
+- None
+
+### Changes
+- Updated attribute-lead.js and self-check.js inside lambda/zips/nightly-worker (1).zip and inside both copies in lambda/zips/nightly-worker.zip.
+- Left slack-report.zip unchanged.
+
+### Reason
+The zips in lambda/zips were the 14 Oct packages, so uploading them would have kept the old source field names.
+
+### Validation
+- None
+
+### Risks / Notes
+- Upload replaces Lambda code only. Existing environment variables stay as they are.
+- slack-report.zip still reads campaign_name
+- not utmCampaign.
+
+### Manual Verification Required
+- Upload lambda/zips/nightly-worker (1).zip to the nightly function. Handler remains src/index.handler. Do not upload slack-report.zip for this change.
+
+
+## 2026-10-16 — Stop deciding lead recapture in the nightly worker
+
+**Agent:** AI coding agent
+
+### Objective
+Leave recapture to TeleCRM and keep one source row per label.
+
+### Files Created
+- None
+
+### Files Modified
+- `lambda/nightly-worker/src/attribute-lead.js`
+- `lambda/nightly-worker/src/self-check.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Remove the 24-hour return split and the lead_recapture filters from source history.
+- The same source label stays one row. A later visit does not add another source row.
+- Refreshed both nightly Lambda zips. slack-report.zip is unchanged.
+
+### Reason
+A later visit of the same source was stored as another capture. TeleCRM already decides whether that visit is a recapture.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js — PASS
+
+### Risks / Notes
+- The n8n sync and dashboard workflows still contain a recapture status heal. This change is in the nightly worker only.
+- Re-upload lambda/zips/nightly-worker (1).zip before the next source run uses it.
+
+### Manual Verification Required
+- Upload lambda/zips/nightly-worker (1).zip. Handler stays src/index.handler.
+
+
+## 2026-10-16 — Collapse repeated stage rows
+
+**Agent:** AI coding agent
+
+### Objective
+Register a stage row only when that platform status changes. Back-to-back copies of the same status are dropped and a later return is kept.
+
+### Files Created
+- None
+
+### Files Modified
+- `new-telecrm-webhook.js`
+- `lambda/nightly-worker/src/attribute-lead.js`
+- `new workflows/1-sync-webhook.json`
+- `new workflows/3-dashboard-to-telecrm.json`
+- `new workflows/4-final-source.json`
+- `new workflows/main prod.json`
+- `scripts/validate-canonical-schema.js`
+
+### Files Deleted
+- None
+
+### Changes
+- buildStageHistory now drops a row that repeats the previous status on the same platform and keeps the earlier time
+- A later return to that status stays including Fresh then Converted then Fresh
+- The same collapse is in the nightly worker and the n8n build nodes including main prod
+
+### Reason
+Stage history copied every TeleCRM row with its own timestamp so the same status could be stored twice a few seconds apart.
+
+### Validation
+- node scripts/validate-canonical-schema.js — new stage assertions passed; the script then failed on the existing temperature check that Converted leads must unset stored temperature
+- node scripts/validate.js — JavaScript syntax and workflow JSON passed; protected-file guard failed because those writers were edited on purpose
+- node lambda/nightly-worker/src/self-check.js — PASS
+
+### Risks / Notes
+- Stored stage arrays shrink on the next sync or nightly source write. Phone 9886159953 loses only the later Converted row from 2026-09-26.
+- Session booked and Converted flips stay because each one is a real status change.
+
+### Manual Verification Required
+- Re-import workflows 1 3 4 and main prod so the next live sync uses the collapse.
+
+
+## 2026-10-16 — Rebuild Lambda zips for the three morning jobs
+
+**Agent:** AI coding agent
+
+### Objective
+Pack today's nightly and Slack source into uploadable Lambda zips so temperature, source, and the 8:30 report run on Lambda.
+
+### Files Created
+- None
+
+### Files Modified
+- `lambda/nightly-worker/UPLOAD.txt`
+- `lambda/slack-report/UPLOAD.txt`
+- `lambda/slack-report/parts/build-report.js`
+
+### Files Deleted
+- None
+
+### Changes
+- Rebuilt lambda/zips/nightly-worker.zip and the identical nightly-worker (1).zip from the current nightly source, with index.mjs and src at the zip root.
+- The nightly zip includes the closed-stage temperature skip, web analytics field names, one row per source label, and stage collapse.
+- Rebuilt lambda/zips/slack-report.zip with index.mjs and parts at the zip root, and taught the report to read utmCampaign and utmAdgroup.
+- UPLOAD.txt on each function names the EventBridge rule that replaces the n8n cron. A zip upload does not create that rule.
+
+### Reason
+The zips on disk were behind today's source, and two of them were nested so Lambda could not find the handler. The three n8n crons cannot stay on.
+
+### Validation
+- node lambda/nightly-worker/src/self-check.js — PASS
+- node --check lambda/slack-report/parts/build-report.js — PASS
+- Both nightly zips are byte-identical. Slack zip has no nested folder and no __MACOSX. No .env file is inside either zip.
+
+### Risks / Notes
+- EventBridge schedules and the nightly self-invoke permission stay as they are in AWS. Uploading a zip only replaces code.
+- DRY_RUN stays an environment variable. Leave it true until a test event looks right, and keep the three n8n schedules off before a live run.
+- lambda/zips is gitignored, so the new packages are local only.
+
+### Manual Verification Required
+- Upload lambda/zips/nightly-worker.zip to the nightly function. Handler stays src/index.handler.
+- Upload lambda/zips/slack-report.zip to the Slack function. Handler stays index.handler.
+- Confirm the nightly start is cron(0 2 * * ? *) UTC and the Slack rule is cron(0 3 * * ? *) UTC. Turn off Nightly Temperature Run, Nightly Source Attribution Run, and Daily 8:30AM IST on n8n.
+

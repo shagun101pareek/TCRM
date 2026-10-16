@@ -1,0 +1,8 @@
+{
+  "name": "telecrm-slack-report",
+  "private": true,
+  "description": "8:30 IST new-telecrm daily report. Posts the Slack summary and HTML file.",
+  "dependencies": {
+    "mongodb": "^7.6.0"
+  }
+}

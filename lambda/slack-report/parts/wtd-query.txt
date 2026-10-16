@@ -1,0 +1,24 @@
+=[{"$set":{"stage":{"$map":{"input":{"$cond":[{"$eq":[{"$type":"$stage"},"array"]},"$stage",[]]},"as":"s","in":{"$let":{"vars":{"ms":{"$let":{"vars":{"raw":"$$s.occurred_at"},"in":{"$switch":{"branches":[{"case":{"$in":[{"$type":"$$raw"},["missing","null"]]},"then":null},{"case":{"$eq":[{"$type":"$$raw"},"date"]},"then":{"$toLong":"$$raw"}},{"case":{"$in":[{"$type":"$$raw"},["int","long","double","decimal"]]},"then":{"$cond":[{"$and":[{"$gte":["$$raw",0]},{"$lt":["$$raw",1000000000000]}]},{"$toLong":{"$multiply":["$$raw",1000]}},{"$toLong":"$$raw"}]}},{"case":{"$eq":[{"$type":"$$raw"},"string"]},"then":{"$let":{"vars":{"asDate":{"$convert":{"input":"$$raw","to":"date","onError":null,"onNull":null}},"asNum":{"$convert":{"input":"$$raw","to":"double","onError":null,"onNull":null}}},"in":{"$cond":[{"$ne":["$$asNum",null]},{"$cond":[{"$and":[{"$gte":["$$asNum",0]},{"$lt":["$$asNum",1000000000000]}]},{"$toLong":{"$multiply":["$$asNum",1000]}},{"$toLong":"$$asNum"}]},{"$convert":{"input":"$$asDate","to":"long","onError":null,"onNull":null}}]}}}}],"default":null}}}}},"in":{"$cond":[{"$eq":["$$ms",null]},"$$s",{"$mergeObjects":["$$s",{"occurred_at":"$$ms"}]}]}}}}}}},
+  { "$facet": {
+    "conv": [
+      { "$match": { "stage": { "$elemMatch": {
+        "platform": "telecrm",
+        "status": { "$in": ["Converted","Won / Converted"] },
+        "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.wtd_iso_start }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.week_start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ]
+      } } } },
+      { "$count": "n" }
+    ],
+    "nshow": [
+      { "$match": { "stage": { "$elemMatch": {
+        "platform": "telecrm",
+        "status": { "$in": ["No Show","Not Shown Up"] },
+        "$or": [ { "occurred_at": { "$gte": "{{ $('Calculate Windows1').item.json.wtd_iso_start }}", "$lt": "{{ $('Calculate Windows1').item.json.iso_date_next }}" } }, { "occurred_at": { "$gte": {{ $('Calculate Windows1').item.json.week_start_ms }}, "$lt": {{ $('Calculate Windows1').item.json.end_ms }} } } ]
+      } } } },
+      { "$count": "n" }
+    ]
+  } },
+  { "$project": {
+      "conv":  { "$ifNull": [ { "$arrayElemAt": ["$conv.n", 0] },  0 ] },
+      "nshow": { "$ifNull": [ { "$arrayElemAt": ["$nshow.n", 0] }, 0 ] }
+  } }
+]

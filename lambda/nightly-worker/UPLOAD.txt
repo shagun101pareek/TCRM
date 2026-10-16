@@ -1,0 +1,37 @@
+Upload this zip in the nightly Lambda: Code -> Upload from -> .zip file.
+Handler: src/index.handler
+Runtime: Node.js 20.x or 24.x
+Timeout: 15 minutes
+Memory: 1024 MB
+Reserved concurrency: 1
+
+This zip is two of the three morning jobs. One 07:30 IST start runs temperature, then source attribution in the same night. It does not send the Slack report.
+
+Leave these n8n schedules off. This function replaces them:
+- Nightly Temperature Run
+- Nightly Source Attribution Run
+
+Leave the realtime temperature trigger on. It is not this cron.
+
+EventBridge on this function:
+- Start: cron(0 2 * * ? *) UTC, which is 07:30 IST. Input {"action":"start"}
+- Watchdog: rate(5 minutes). Input {"action":"continue","watchdog":true"}
+The function also needs permission to invoke itself. A zip upload does not create those rules.
+
+Environment variables:
+MONGODB_URI
+MONGODB_DB=stance-dashboard
+TELECRM_ENTERPRISE_ID
+TELECRM_API_TOKEN
+TELECRM_AUTOUPDATE_TOKEN
+NIGHTLY_TEMPERATURE_PAGE_SIZE=10
+NIGHTLY_SOURCE_PAGE_SIZE=25
+NIGHTLY_STATE_COLLECTION=nightly_worker_state
+TELECRM_TIMEOUT_MS=20000
+DRY_RUN=true
+
+This package scores every open stage, including Session booked. Converted and Not Converted are not scored and are not pushed. Source rows keep web analytics under their own names, including utmCampaign, and do not copy utmSource. The same source label stays one row. Repeated stage rows of the same status collapse.
+
+Test event: {"action":"status"}
+Then, while DRY_RUN=true: {"action":"start"}
+Set DRY_RUN=false only after that page looks right, and only after the two n8n nightly schedules are off.
